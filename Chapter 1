@@ -1,0 +1,745 @@
+NCP-AAI EXAM — MODULE 1: AGENT ARCHITECTURE AND DESIGN
+Deep Study Notes | Exam Weight: 15% (HIGHEST WEIGHT MODULE) | Study Time: 8-10 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Think of an agentic AI system as a software entity with agency — it doesn't
+just respond, it pursues goals. The key upgrade from a chatbot to an agent is
+the addition of: perception, reasoning, action, and feedback loops. This module
+is the foundation for everything else in the exam. 15% of the exam lives here,
+so this is your highest-ROI study area.
+
+The three tensions you'll see in every scenario question:
+  1. Speed vs. Intelligence (reactive vs. deliberative)
+  2. Simplicity vs. Capability (single vs. multi-agent)
+  3. Autonomy vs. Control (automation vs. human oversight)
+
+Every architectural decision is a trade-off along these three axes.
+
+
+================================================================================
+SECTION 1: WHAT MAKES SOMETHING AN AGENT (Exam Obj 1.1)
+================================================================================
+
+Five characteristics — know the definitions and examples cold.
+
+AUTONOMY:
+  Operates without constant human direction.
+  Example: Customer service agent handles routine inquiries end-to-end.
+  Contrast: A chatbot that only responds when prompted — not autonomous.
+
+REACTIVITY:
+  Perceives environment and responds to changes in real-time.
+  Example: Trading agent reacts to price movements immediately.
+  Key: Reactive means triggered by environment, not just user messages.
+
+PROACTIVITY:
+  Takes initiative to pursue goals, doesn't just wait for input.
+  Example: Research agent proactively gathers information before you ask.
+  Key: Goal-driven behavior distinguishes agents from reactive systems.
+
+SOCIAL ABILITY:
+  Can interact with other agents AND humans.
+  Example: Multi-agent system where agents delegate sub-tasks to each other.
+  Key: This is what makes multi-agent coordination possible.
+
+LEARNING / ADAPTABILITY:
+  Improves based on experience and feedback.
+  Example: Agent refines responses based on user corrections over time.
+
+EXAM TIP: The reactive vs. proactive distinction is a common trap.
+  Reactive = responds to stimuli (environment-triggered)
+  Proactive = initiates actions toward goals (goal-triggered)
+  These are NOT opposites — agents can and should be both.
+
+
+================================================================================
+SECTION 2: THREE CORE ARCHITECTURES (Exam Obj 1.1, 1.2)
+================================================================================
+
+This is the #1 most tested topic. Every scenario question comes back to this.
+
+---------------------------------------
+2.1 REACTIVE ARCHITECTURE
+---------------------------------------
+Core idea: Simple stimulus → response. No internal world model, no planning.
+Just: "If condition X, do action Y."
+
+How it works:
+  Agent perceives environment state → checks rule set → executes matching action.
+  No memory of past states beyond what the environment exposes.
+
+Strengths:
+  - Very fast (no reasoning overhead)
+  - Predictable and deterministic
+  - Easy to debug and trace
+  - Resource-efficient
+
+Weaknesses:
+  - Can't handle novel situations not covered by rules
+  - No context — same input always produces same output regardless of history
+  - No planning capability
+  - Brittle under edge cases
+
+When to use (exam decision rule):
+  - Simple, well-defined use cases
+  - Latency is the primary constraint
+  - Rules are clear and enumerable
+  - No multi-step reasoning needed
+  Examples: Alert systems, simple FAQ bots, rule-based routing
+
+---------------------------------------
+2.2 DELIBERATIVE ARCHITECTURE
+---------------------------------------
+Core idea: Maintain an internal world model, reason about it, plan actions.
+Think "chess engine" — builds a model of the game state, plans ahead.
+
+How it works:
+  Perceive → Update world model → Reason against goals → Generate plan →
+  Execute plan step-by-step.
+
+Strengths:
+  - Handles complex, multi-step tasks
+  - Explainable reasoning (you can trace why each decision was made)
+  - Goal-oriented — pursues objectives even when path is non-obvious
+  - Can anticipate future states
+
+Weaknesses:
+  - Slower — reasoning and planning take time
+  - Computationally expensive
+  - Brittle if world model diverges from reality
+  - Struggles with real-time environments
+
+When to use (exam decision rule):
+  - Complex multi-step tasks requiring planning
+  - Explainability/auditability required (regulatory, compliance)
+  - Tasks where getting it right matters more than speed
+  Examples: Loan processing, legal analysis, scientific research agents
+
+---------------------------------------
+2.3 HYBRID ARCHITECTURE (Production Default)
+---------------------------------------
+Core idea: Layered — reactive layer handles simple/fast cases, deliberative
+layer handles complex cases. Reactive layer routes up when confidence is low.
+
+How it works:
+  Input → Reactive layer evaluates → If confidence >= threshold → fast response
+  If confidence < threshold → escalate to deliberative layer → reasoned response
+
+Strengths:
+  - Best of both: speed for simple tasks, sophistication for complex ones
+  - Practical for production: 80% of queries are routine (fast path)
+  - Graceful degradation under load
+  - More resilient than pure deliberative
+
+Weaknesses:
+  - More complex to implement
+  - Layer coordination logic must be correct
+  - Threshold tuning required
+
+When to use (exam decision rule):
+  - This is the DEFAULT production answer for most scenarios
+  - Mixed workload (routine + complex queries)
+  - Latency SLA required but complex reasoning also needed
+  Examples: Customer support agents, enterprise assistants, production chatbots
+
+NVIDIA IMPLEMENTATION:
+  Reactive layer: nvidia/llama-3.1-8b-instruct (fast, small model)
+  Deliberative layer: nvidia/llama-3.1-70b-instruct (powerful, larger model)
+  Threshold: 0.8 confidence score (escalate if < 0.8)
+
+ARCHITECTURE DECISION SHORTCUT FOR EXAM:
+  - "Simple, fast, rules" → Reactive
+  - "Complex, explainable, regulatory" → Deliberative
+  - "Production, mixed load, latency + intelligence" → Hybrid (MOST COMMON ANSWER)
+
+
+================================================================================
+SECTION 3: REACT PATTERN — REASONING + ACTING (Exam Obj 1.2)
+================================================================================
+
+ReAct is probably the single most tested concept in the entire exam.
+Know it inside and out.
+
+---------------------------------------
+3.1 What ReAct Is
+---------------------------------------
+ReAct = Reasoning + Acting. It's a loop structure, not an architecture.
+Can be used inside any architecture (usually deliberative or hybrid).
+
+The four-step loop:
+  1. THOUGHT: Agent reasons about what to do ("I need to find X first")
+  2. ACTION: Agent calls a tool (search, calculator, API, database)
+  3. OBSERVATION: Agent receives result from the tool
+  4. REPEAT: Agent reasons about observation, decides next step
+     Until: Goal achieved → generate ANSWER
+
+Why it matters:
+  - Enables complex, multi-step tasks that need external information
+  - Produces traceable, auditable reasoning steps
+  - Tool calls are explicit and logged
+  - Can recover from errors (observe failure → reason about fix → retry)
+
+---------------------------------------
+3.2 ReAct Execution Trace — Memorize This Pattern
+---------------------------------------
+
+Thought: I need the population of Tokyo.
+Action: Search("Tokyo population")
+Observation: Tokyo population is approximately 14 million.
+
+Thought: Now I need to multiply 14 million by 2.
+Action: Calculator("14000000 * 2")
+Observation: Result: 28000000
+
+Thought: I have all the information needed.
+Answer: The population of Tokyo multiplied by 2 is 28,000,000.
+
+Pattern: Thought → Action → Observation (repeats until Answer)
+
+---------------------------------------
+3.3 When to Use ReAct (Exam)
+---------------------------------------
+USE ReAct when:
+  - Task requires multiple steps with external info at each step
+  - You need explainable reasoning traces (compliance, audit)
+  - Actions depend on previous observations
+  - Tools need to be orchestrated (search + calculate + verify, etc.)
+
+DON'T USE ReAct when:
+  - Single-step query, no tools needed
+  - Latency is critical (each loop iteration adds latency)
+  - Task is fully self-contained in LLM knowledge
+
+---------------------------------------
+3.4 Critical Production Concern: Infinite Loops
+---------------------------------------
+ReAct agents CAN loop forever — this is a real production risk.
+The fix: max_iterations parameter (typically 5-10).
+
+Without limit: agent repeatedly searches for same info, never converges.
+With limit: after N iterations, fall back to best available answer.
+
+Also: track previously executed actions to detect cycles.
+If same action+params seen twice → break the loop.
+
+EXAM PATTERN: Any scenario mentioning "agent gets stuck" or "loops repeatedly"
+→ Answer is: add max_iterations + loop detection.
+
+---------------------------------------
+3.5 Four Chain Types Reappear Here
+---------------------------------------
+(These were covered in Module 4 notes but map to ReAct chain execution)
+
+STUFF: All retrieved context in one prompt → fast, simple, context-limited
+MAP_REDUCE: Each doc processed in parallel → scalable for large doc sets
+REFINE: Sequential refinement → highest quality, slowest
+MAP_RERANK: Score each doc+answer → best for ranked confidence
+
+These apply when ReAct retrieves multiple documents as observations.
+
+
+================================================================================
+SECTION 4: MULTI-AGENT SYSTEMS (Exam Obj 1.3, 1.5)
+================================================================================
+
+---------------------------------------
+4.1 When to Go Multi-Agent
+---------------------------------------
+Single agent is simpler — default to it unless:
+  1. Task is decomposable into independent subtasks
+  2. Each subtask needs different expertise/model/tools
+  3. Subtasks can run in parallel (scaling benefit)
+  4. Single agent context window can't hold all task context
+
+If any of those are true AND decomposition is clear → multi-agent.
+
+---------------------------------------
+4.2 Three Multi-Agent Patterns — Know All Three
+---------------------------------------
+
+PATTERN 1: HIERARCHICAL (Supervisor-Worker) — Most Common in Production
+  Structure: Supervisor agent receives task, decomposes, delegates to workers,
+    aggregates results, returns final answer.
+  Workers: Each specialized (Research Agent, Analysis Agent, Writing Agent)
+  Communication: Top-down delegation + bottom-up results
+
+  Strengths:
+    - Clear responsibility — supervisor handles coordination
+    - Easy to add/remove workers without redesigning system
+    - Supervisor can do quality control before returning results
+    - Most intuitive for enterprise use cases
+
+  Weaknesses:
+    - Supervisor is single point of failure
+    - Supervisor bottleneck under high load
+
+  When to use: Most enterprise scenarios — content pipelines, research
+    assistants, customer service routing, complex task decomposition.
+
+  IMPLEMENTATION: LangGraph StateGraph with supervisor_node + worker_nodes
+    + conditional_edges routing based on supervisor decision.
+
+PATTERN 2: PEER-TO-PEER (Collaborative)
+  Structure: Agents communicate directly, no central coordinator.
+    Any agent can initiate communication with any other.
+  Communication: Bidirectional message passing between agents.
+
+  Strengths:
+    - No single point of failure
+    - Flexible collaboration patterns
+    - Can build consensus across agents
+
+  Weaknesses:
+    - Complex to coordinate
+    - Conflict resolution is hard
+    - Harder to debug and monitor
+    - Message loop risk
+
+  When to use: Consensus building, peer review/validation systems,
+    distributed problem-solving where no single agent has full context.
+
+PATTERN 3: PIPELINE (Sequential)
+  Structure: Fixed sequence of agents, each passes output to the next.
+    Agent A → Agent B → Agent C → Output
+
+  Strengths:
+    - Simple, predictable, easy to debug
+    - Each stage clearly defined
+    - Easy to swap individual stages
+
+  Weaknesses:
+    - Inflexible — can't skip stages or loop back
+    - Bottleneck at slowest stage
+    - Error propagation: bad output from Agent A corrupts all downstream
+
+  When to use: Sequential processes where each step builds on previous
+    output: ETL pipelines, content generation chains, multi-stage analysis,
+    document processing workflows.
+
+PATTERN SELECTION CHEAT SHEET:
+  "Different expertise, need coordination" → Hierarchical
+  "Need consensus, no clear leader" → Peer-to-Peer
+  "Fixed sequential steps, each builds on last" → Pipeline
+
+---------------------------------------
+4.3 Agent Communication Mechanisms
+---------------------------------------
+
+MESSAGE PASSING:
+  Agents send typed messages (request, response, inform) to each other.
+  Message has: sender, receiver, content, type, timestamp.
+  Asynchronous — sender doesn't wait for response.
+  Best for: Loosely coupled agents, peer-to-peer patterns.
+
+SHARED STATE:
+  All agents read/write to a common state object (TypedDict in LangGraph).
+  State fields are the communication channel.
+  Synchronous — agents take turns updating state.
+  Best for: Tightly coupled workflows, supervisor-worker in LangGraph.
+  This is the LangGraph default: AgentState TypedDict shared across nodes.
+
+BROADCAST:
+  One agent sends message to all others simultaneously.
+  Best for: Notifications, status updates, consensus proposals.
+
+EXAM TIP: LangGraph uses shared state. Message passing is the protocol for
+  loosely coupled multi-agent systems. Know the difference.
+
+
+================================================================================
+SECTION 5: MEMORY MANAGEMENT (Exam Obj 1.4)
+================================================================================
+
+---------------------------------------
+5.1 Short-Term Memory (Within Session)
+---------------------------------------
+Purpose: Maintain conversation context within a single interaction.
+Problem it solves: LLMs are stateless — without memory, each message is
+  independent and the agent forgets everything you said 5 messages ago.
+
+THREE STRATEGIES:
+
+SLIDING WINDOW:
+  Keep the last N messages (e.g., N=10).
+  Simple, predictable, bounded memory.
+  Problem: Older context is hard-dropped, may lose important early info.
+  Best for: Short conversations, FAQ bots, where recent context is all that matters.
+
+TOKEN-BASED TRUNCATION:
+  Keep messages until token budget (e.g., 4096 tokens) is exceeded.
+  Remove oldest messages when budget exceeded.
+  More precise than message count — accounts for varying message lengths.
+  Best for: When you have a strict context window budget to manage.
+
+SUMMARIZATION:
+  When conversation exceeds threshold (e.g., 10 messages), summarize old
+  messages into a compact summary, retain only recent messages + summary.
+  Preserves old context in compressed form — nothing is fully lost.
+  Requires LLM call to summarize → adds latency and cost.
+  Best for: Long conversations (support sessions, research assistants).
+
+WHICH STRATEGY WHEN (Exam Decision):
+  Short conversation, simple bot → Sliding Window
+  Long conversation, nuanced context → Summarization
+  Strict token budget, technical constraints → Token-Based Truncation
+
+---------------------------------------
+5.2 Long-Term Memory (Across Sessions)
+---------------------------------------
+Purpose: Persist knowledge across multiple conversations — personalization,
+  learning user preferences, storing facts from past interactions.
+
+VECTOR STORE MEMORY:
+  Store conversation turns as embeddings.
+  At query time, retrieve semantically relevant memories.
+  Implemented with: FAISS (dev), Milvus (prod) + NVIDIA nv-embed-v1.
+  Best for: Personalization (remember user preferences, past decisions).
+
+KNOWLEDGE GRAPH MEMORY:
+  Store relationships between entities explicitly.
+  Example: "User works at TechCorp, manages Bob, is interested in AI."
+  Best for: Complex relational knowledge, multi-hop reasoning across facts.
+
+RELATIONAL DB / KEY-VALUE:
+  Store structured facts: user_id → {name, preferences, history}.
+  Fast retrieval by key, no semantic search.
+  Best for: Simple user profiles, session metadata, structured lookups.
+
+MEMORY SELECTION MATRIX:
+  Customer support: Short-term = Sliding Window, Long-term = Vector Store
+  Research assistant: Short-term = Summarization, Long-term = Knowledge Graph
+  Quick Q&A: Short-term = Token Budget, Long-term = None
+  Personal assistant: Short-term = Summarization, Long-term = Vector + Graph
+  Code assistant: Short-term = Sliding Window (20 msgs), Long-term = Vector Store
+
+---------------------------------------
+5.3 Context Window Management — Production Critical
+---------------------------------------
+Context window = the total tokens the LLM can see at once.
+  - GPT-4: 128K tokens
+  - LLaMA 3.1 70B: 128K tokens
+  - Smaller models: 8K-32K tokens
+
+The challenge: As conversations grow, you'll overflow the context window.
+The solution: One of the three short-term strategies above.
+
+Production rule: Always track token count, always have a truncation strategy.
+Never let context grow unbounded — it will eventually crash.
+
+Anti-pattern: Unbounded context growth:
+  BAD: conversation_history.append(message)  # No limit
+  GOOD: if token_count > budget: apply_truncation_strategy()
+
+
+================================================================================
+SECTION 6: STATEFUL ORCHESTRATION AND LOGIC TREES (Exam Obj 1.6)
+================================================================================
+
+---------------------------------------
+6.1 Stateful Orchestration
+---------------------------------------
+Problem: Complex workflows need to persist state across multiple turns.
+  A support ticket that goes through: intake → diagnosis → escalation → resolution
+  can't be stateless — each step needs to know what happened before.
+
+LangGraph is NVIDIA's/LangChain's answer to stateful agent workflows.
+  - State = TypedDict with all relevant workflow variables
+  - Nodes = functions that read/write state
+  - Edges = connections between nodes (can be conditional)
+  - Conditional edges = routing decisions based on state values
+
+Key LangGraph concepts:
+  StateGraph: The workflow object
+  add_node(): Register a function as a workflow step
+  add_edge(): Define fixed transition between nodes
+  add_conditional_edges(): Define routing based on state
+  set_entry_point(): Define where workflow starts
+  compile(): Finalize the graph
+  invoke(): Execute with initial state
+
+---------------------------------------
+6.2 Conditional Routing Pattern
+---------------------------------------
+The most important LangGraph pattern for the exam:
+
+  workflow.add_conditional_edges(
+    source_node,           # Which node to route FROM
+    routing_function,      # Function that returns destination name
+    {                      # Map of return values to destination nodes
+      "technical": "technical_handler",
+      "billing": "billing_handler",
+      "general": "general_handler"
+    }
+  )
+
+The routing_function reads the state and returns a string key.
+That key maps to the next node name.
+This is how you implement: classify → route → handle in stateful workflows.
+
+---------------------------------------
+6.3 Logic Trees
+---------------------------------------
+Logic trees = structured binary decision trees embedded in agent logic.
+Used for: Deterministic rule-based decisions (eligibility, routing, compliance).
+
+Structure: Each node has a condition function + true branch + false branch.
+Leaf nodes: return a decision value (APPROVED, REJECTED, MANUAL_REVIEW).
+Evaluation: Start at root, evaluate condition, recurse into appropriate branch.
+
+When to use: When decisions must be deterministic, auditable, and rule-based.
+  Example: Loan eligibility = credit_score check → income check → decision.
+  This is more reliable than asking an LLM to make structured binary decisions.
+
+---------------------------------------
+6.4 Prompt Chains
+---------------------------------------
+Prompt chains = sequential multi-step LLM calls where each output feeds next.
+
+Pattern:
+  Initial input → Step 1 (outline) → Step 2 (research based on outline)
+  → Step 3 (draft based on research) → Step 4 (refine draft) → Final output
+
+Context propagates: Each step receives all previous outputs as context.
+Building blocks for complex generation tasks.
+
+When to use: Complex content generation, multi-stage analysis, tasks where
+  the output of one step defines the input of the next.
+
+Difference from ReAct: Prompt chains are deterministic and sequential.
+  ReAct is dynamic — the agent decides what to do next based on observations.
+
+
+================================================================================
+SECTION 7: KNOWLEDGE GRAPH INTEGRATION (Exam Obj 1.7)
+================================================================================
+
+Knowledge graphs store explicit relationships: entities + edges (relationships).
+Example: Alice → works_at → TechCorp, Alice → manages → Bob,
+  Bob → works_on → AI Platform, AI Platform → uses → NVIDIA NIM.
+
+WHY KNOWLEDGE GRAPHS IN AGENTS:
+  - Relationships are explicit, not inferred — reduces hallucination
+  - Multi-hop queries: "Who manages the person working on AI Platform?"
+    Answer traversal: AI Platform ← Bob ← Alice (managed by)
+  - Provenance: Every fact has a source
+  - Consistency: No contradictions — one authoritative answer per fact
+
+WHEN KNOWLEDGE GRAPH > VECTOR STORE:
+  - Complex relational queries (multi-hop reasoning)
+  - Domain has well-defined entity types and relationship types
+  - Consistency and provenance matter (financial, healthcare, compliance)
+  - Exact lookups required, not fuzzy similarity
+
+IMPLEMENTATION:
+  Neo4j = most common graph DB for agents
+  Cypher = query language (SQL equivalent for graphs)
+  GraphCypherQAChain = LangChain class that lets LLM generate Cypher from NL
+  LLM translates natural language query → Cypher → Neo4j executes → result
+
+HYBRID APPROACH (Best of Both):
+  Vector store for unstructured content (documents, text)
+  Knowledge graph for structured relationships (entities, facts, org charts)
+  Agent uses both: semantic search for context + graph traversal for facts
+  This is the production pattern for enterprise AI agents.
+
+
+================================================================================
+SECTION 8: SCALABILITY AND ADAPTABILITY (Exam Obj 1.8)
+================================================================================
+
+HORIZONTAL SCALING:
+  Multiple agent instances behind a load balancer.
+  Requirement: Agents must be STATELESS (state stored externally).
+  External state: Redis, DynamoDB, or a shared DB, not in-memory.
+  With NIM: Auto-scaling based on request load, multi-GPU support.
+
+VERTICAL SCALING:
+  Optimize per-instance performance.
+  TensorRT-LLM: NVIDIA's LLM inference optimizer — up to 10-100x faster.
+  Quantization: Reduce model precision (FP16, INT8) — faster inference, less VRAM.
+  Caching: Cache common responses — massive throughput gains for repeated queries.
+  KV Cache: NVIDIA NIM handles this automatically for inference optimization.
+
+ADAPTABILITY PATTERNS:
+  Dynamic tool loading: Register new tools at runtime without restarting agent.
+    Example: Agent loaded with finance tools in morning, healthcare tools for
+    different client, swapped without code change.
+
+  Learning from feedback: Log user ratings + corrections.
+    Accumulate feedback → update system prompt or trigger fine-tuning.
+    Don't change behavior after every response — batch feedback analysis.
+
+STATELESSNESS REQUIREMENT FOR SCALE:
+  Stateful agents can't be horizontally scaled — each request must hit same
+  instance (sticky sessions) which breaks load balancing.
+  Solution: Move state to external store (Redis/DynamoDB), make agent stateless.
+  NIM enables this by handling inference statelessly.
+
+
+================================================================================
+SECTION 9: NVIDIA-SPECIFIC ARCHITECTURE TOOLS
+================================================================================
+
+NEMO AGENT TOOLKIT:
+  Pre-built agent templates for common patterns.
+  Optimized inference pipelines for NVIDIA hardware.
+  Handles the plumbing: HybridAgent, ReactiveLayer, DeliberativeLayer classes.
+  Sets up confidence thresholds, model routing, optimization levels.
+
+NIM (NVIDIA INFERENCE MICROSERVICES):
+  Containerized inference services for LLMs.
+  10-100x faster than naive deployments.
+  Features: automatic batching, KV cache, multi-GPU parallelism, load balancing.
+  Used as the backend for LLM calls in agent workflows.
+  LangChain integration: ChatNVIDIA(base_url="your-nim-endpoint").
+
+NEMO GUARDRAILS:
+  Safety layer that wraps any LLM with configurable rules.
+  Input rails: Block jailbreaks, detect sensitive data before it reaches LLM.
+  Output rails: Check for harmful content, hallucinations, policy violations.
+  Configuration: YAML-based colang files, not Python code.
+  Critical for production agents — can't deploy without safety checks.
+
+ARCHITECTURE OF A FULL NVIDIA AGENT STACK:
+  User → NeMo Guardrails (input check) → Hybrid Agent
+  → Reactive Layer (8B NIM) or Deliberative Layer (70B NIM)
+  → Tools (search, calculator, APIs)
+  → Response → NeMo Guardrails (output check) → User
+
+
+================================================================================
+SECTION 10: PERFORMANCE METRICS (Exam May Reference)
+================================================================================
+
+Task Success Rate = (Successful Completions / Total Attempts) × 100%
+Average Response Time = Σ(Response Times) / Number of Requests
+Tool Call Efficiency = Successful Tool Calls / Total Tool Calls
+Memory Utilization = Used Context Tokens / Max Context Tokens
+Escalation Rate = Human Escalations / Total Requests (lower = better)
+Throughput = Requests Processed / Time Period
+Cost per Request = (Inference Cost + Infrastructure Cost) / Total Requests
+
+
+================================================================================
+SECTION 11: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: Customer support agent, 10,000 req/day, 2-second SLA, 80% routine FAQs,
+   needs to escalate complex issues to humans. Best architecture?
+A: HYBRID — reactive layer for FAQs (fast path, small model),
+   deliberative layer for complex queries, escalation logic.
+WHY: 80% fast path keeps latency in budget. Deliberative handles the 20%
+   complex cases. Human escalation built into deliberative layer output.
+
+SCENARIO 2:
+Q: Agent loops, repeatedly searching for same info. How to fix?
+A: Implement max_iterations (e.g., 5) + track action history to detect
+   duplicate calls. Break loop and return best available answer.
+WHY: Standard ReAct infinite loop prevention.
+
+SCENARIO 3:
+Q: Research assistant: gather info, analyze, generate report — sequential.
+   Each step needs different expertise. Multi-agent pattern?
+A: PIPELINE — fixed sequence, each agent specialized for its step.
+WHY: Sequential, no backtracking needed, clear handoff between stages.
+
+SCENARIO 4:
+Q: Loan processing agent must verify documents, check credit, calculate risk,
+   make approval decision — all explainable for regulators.
+A: DELIBERATIVE + REACT — multi-step tool calls (credit check API, doc
+   verification), ReAct provides audit trace for regulatory explainability.
+WHY: Compliance requires traceable reasoning. Deliberative + ReAct gives that.
+
+SCENARIO 5:
+Q: Agent needs to answer "Who manages the person working on the AI Platform?"
+   from enterprise org data. Best knowledge approach?
+A: KNOWLEDGE GRAPH — multi-hop relational query. Vector store can't traverse
+   explicit relationships; graph traversal does this natively.
+WHY: Multi-hop relational = knowledge graph.
+
+SCENARIO 6:
+Q: Personal assistant needs to remember user preferences across sessions
+   (user said they prefer concise answers, works in finance, dislikes jargon).
+A: LONG-TERM VECTOR STORE MEMORY — semantic retrieval of relevant preferences
+   at query time. Store user facts as embeddings, retrieve relevant ones.
+WHY: Cross-session persistence, semantic retrieval, unstructured user facts.
+
+SCENARIO 7:
+Q: Agent has very long support conversations that overflow context window.
+   Users get frustrated when agent "forgets" what was discussed earlier.
+A: SUMMARIZATION MEMORY — summarize old messages into a summary block,
+   retain recent messages. Preserves old context without token overflow.
+WHY: Long conversations need compression. Sliding window hard-drops old context.
+   Summarization preserves semantic content in compressed form.
+
+SCENARIO 8:
+Q: You need to scale an agent to handle 100x traffic. What must change?
+A: Make agents STATELESS (move session state to Redis/DynamoDB),
+   deploy multiple NIM instances behind load balancer,
+   enable NIM auto-scaling.
+WHY: Stateful agents can't horizontally scale. Stateless design is required.
+
+
+================================================================================
+SECTION 12: ANTI-PATTERNS — WHAT NOT TO DO
+================================================================================
+
+OVER-ENGINEERING: Don't use multi-agent when single agent suffices.
+  The complexity cost of multi-agent is real. Default to single agent.
+
+UNBOUNDED CONTEXT: Never let conversation history grow without limit.
+  Always implement one of the three truncation strategies.
+
+NO ERROR HANDLING: Agents will fail. API calls will fail. Handle gracefully.
+  Specific, actionable error messages > generic "An error occurred."
+
+HARDCODED PROMPTS: Prompts should be configurable templates, not string literals.
+  Makes tuning, testing, and versioning nearly impossible otherwise.
+
+NO ITERATION LIMIT: Every ReAct agent MUST have max_iterations.
+  Infinite loops will burn money and time in production.
+
+NO MONITORING: You can't improve what you don't measure.
+  Track: latency, success rate, tool call efficiency, escalation rate.
+
+IGNORING COSTS: LLM calls are expensive. 70B model calls cost 10x more
+  than 8B model calls. Route simple queries to small model (hybrid).
+
+SKIPPING GUARDRAILS: Never deploy without NeMo Guardrails or equivalent.
+  Every production agent needs input + output safety checks.
+
+
+================================================================================
+SECTION 13: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name and describe all 5 agent characteristics?
+□ Do I know reactive vs. deliberative vs. hybrid with trade-offs?
+□ Can I explain when to choose each architecture from a scenario?
+□ Can I trace a ReAct loop (Thought→Action→Observation→Answer)?
+□ Do I know when to use ReAct and when NOT to?
+□ Can I explain max_iterations and why it's mandatory?
+□ Can I describe all 3 multi-agent patterns with use cases?
+□ Do I know how to choose between hierarchical, P2P, and pipeline?
+□ Can I explain shared state vs. message passing in multi-agent?
+□ Do I know all 3 short-term memory strategies and when to use each?
+□ Can I explain long-term memory: vector store vs. knowledge graph?
+□ Do I understand stateful orchestration with LangGraph basics?
+□ Can I explain conditional routing (add_conditional_edges)?
+□ Do I understand knowledge graphs and when they beat vector stores?
+□ Can I explain horizontal scaling requirements (stateless agents)?
+□ Do I know NeMo Agent Toolkit, NIM, and NeMo Guardrails roles?
+□ Can I calculate Task Success Rate and Escalation Rate?
+□ Can I solve all 8 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 15% of total score — HIGHEST WEIGHT MODULE
+Focus: Architecture selection, ReAct pattern, multi-agent coordination,
+  memory management, stateful orchestration. These five areas dominate.
+  Master hybrid architecture + ReAct = ~50% of this module's points.
+================================================================================
