@@ -1,0 +1,779 @@
+NCP-AAI EXAM — MODULE 2: AGENT DEVELOPMENT
+Deep Study Notes | Exam Weight: 15% (TIED FOR HIGHEST) | Study Time: 8-10 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Module 2 is the "how to actually build it" companion to Module 1's "how to
+design it." While Module 1 is about architecture decisions, Module 2 is about
+the craft of implementation: writing prompts that work, building tools that
+don't break, handling failures gracefully, and continuously improving quality.
+
+The five skills this module tests:
+  1. Prompt engineering — making LLMs do what you want, reliably
+  2. Tool building — connecting agents to the real world safely
+  3. Resilience engineering — handling failures without crashing
+  4. Performance tuning — making agents fast and cost-effective
+  5. Evaluation discipline — measuring quality and improving it
+
+Everything here is practical. If Module 1 is the blueprint, Module 2 is
+the construction manual.
+
+
+================================================================================
+SECTION 1: PROMPT ENGINEERING FOR AGENTS (Exam Obj 2.1)
+================================================================================
+
+---------------------------------------
+1.1 The Five Principles of Effective Agent Prompts
+---------------------------------------
+
+CLARITY:
+  Be explicit. Don't assume the model will infer what you mean.
+  BAD: "Help the user."
+  GOOD: "You are a customer support agent for TechCorp. Acknowledge the
+    user's concern, ask clarifying questions if needed, provide step-by-step
+    solutions, and escalate if the issue is complex."
+
+CONTEXT:
+  Give the model everything it needs to perform the role.
+  Include: agent role, purpose, capabilities, user context, constraints.
+  Context = who you are + what you can do + what rules you follow.
+
+STRUCTURE:
+  Consistent formatting helps the model parse your intent.
+  Use numbered lists for sequential instructions.
+  Use headers for distinct sections.
+  Separate role definition from task instructions.
+
+EXAMPLES (Few-Shot):
+  Show the model what good output looks like.
+  One good example is worth 100 words of instruction.
+  Match the output format of examples to desired output format.
+
+CONSTRAINTS:
+  Specify what NOT to do, not just what to do.
+  Token limits, tone requirements, what to escalate, what to refuse.
+
+---------------------------------------
+1.2 Prompt Template Architecture
+---------------------------------------
+Every production agent prompt should have these components:
+
+  [ROLE DEFINITION]
+    Who is this agent? What is its purpose?
+    "You are a customer support agent for TechCorp..."
+
+  [CAPABILITIES]
+    What tools/actions can the agent take?
+    "You have access to: customer lookup, ticket creation, knowledge base search"
+
+  [GUIDELINES / RULES]
+    How should the agent behave?
+    "1. Always acknowledge before solving. 2. Escalate if frustrated user."
+
+  [CONTEXT INJECTION]
+    Dynamic data inserted at runtime: user name, history, retrieved docs.
+    "Customer: {user_name}. Previous interactions: {history}."
+
+  [TASK / INPUT]
+    The actual user request.
+    "Current issue: {issue}"
+
+  [OUTPUT FORMAT INSTRUCTION] (optional but powerful)
+    "Respond in JSON: {answer, confidence, follow_up_needed}"
+
+---------------------------------------
+1.3 Dynamic Prompt Chains — The Three Patterns
+---------------------------------------
+
+SEQUENTIAL CHAIN:
+  Each step's output becomes next step's input. Fixed order.
+  Example: Extract entities → Generate search queries → Synthesize answer
+  Use when: Task naturally decomposes into dependent sequential steps.
+  LangChain class: SequentialChain
+
+CONDITIONAL CHAIN:
+  Different prompts execute based on input classification.
+  Example: Query complexity → "simple" → brief_prompt, "technical" → code_prompt
+  Use when: Different users or query types need different prompt strategies.
+  Implementation: Classify first, route to matching prompt/chain.
+
+ITERATIVE REFINEMENT:
+  Same prompt applied repeatedly, each pass improving output.
+  Example: Draft → Critique → Revise → Critique → Final
+  Use when: Quality of output matters more than speed.
+  Implement with a loop + stopping condition (quality score threshold).
+
+---------------------------------------
+1.4 Chain-of-Thought (CoT) Prompting
+---------------------------------------
+CoT forces the model to show its reasoning before giving an answer.
+
+Pattern:
+  "Let's think step by step:
+   Step 1: Understand the problem → [analysis]
+   Step 2: Identify relevant info → [key facts]
+   Step 3: Develop approach → [strategy]
+   Step 4: Execute → [work shown]
+   Step 5: Verify → [sanity check]
+   Final Answer:"
+
+WHEN TO USE COT:
+  - Math problems, logic puzzles, multi-step calculations
+  - Complex classification with nuanced edge cases
+  - Tasks where intermediate reasoning affects the answer
+  - Compliance/audit scenarios where reasoning must be shown
+
+WHEN NOT TO USE COT:
+  - Simple fact retrieval (just adds tokens)
+  - Latency-critical paths (CoT = more tokens = slower)
+  - High-volume simple tasks (cost inefficient)
+
+COT TRADE-OFF: Better accuracy + more tokens + more latency.
+Use for quality-critical paths, skip for speed-critical paths.
+
+---------------------------------------
+1.5 Few-Shot Prompting
+---------------------------------------
+Give the model 2-4 examples of (input → output) pairs before the real input.
+
+WHEN IT HELPS:
+  - Output format must be very specific (JSON schema, specific structure)
+  - Domain-specific terminology or classification
+  - Behavior that's hard to describe but easy to demonstrate
+  - Edge cases you want handled a specific way
+
+FORMAT:
+  Example 1:
+  Input: [example input]
+  Output: [desired output]
+
+  Example 2:
+  Input: [example input]
+  Output: [desired output]
+
+  Now process this:
+  Input: {actual_input}
+  Output:
+
+IMPORTANT: Examples must match the exact output format you want.
+  Inconsistent examples = inconsistent outputs.
+
+---------------------------------------
+1.6 Temperature and Sampling Parameters
+---------------------------------------
+Temperature controls randomness/creativity:
+  0.0-0.3: Deterministic, consistent, fact-based tasks, classification
+  0.4-0.7: Balanced, general-purpose conversational agents
+  0.7-1.0: Creative, varied, brainstorming tasks
+
+top_p (nucleus sampling): Alternative to temperature. Controls probability
+  mass cutoff. top_p=0.9 means consider only tokens that cover 90% of
+  probability mass.
+
+max_tokens: Cap on output length. Lower = faster + cheaper.
+  Set this appropriately for your task. 256 for short answers, 1024+ for
+  detailed analysis.
+
+EXAM TIP: For consistent classification/routing decisions → temperature 0.1-0.3.
+  For conversational agents → 0.7. Never use temperature > 0.9 in production.
+
+
+================================================================================
+SECTION 2: TOOL INTEGRATION AND FUNCTION CALLING (Exam Obj 2.3)
+================================================================================
+
+---------------------------------------
+2.1 What Tools Are and Why They Matter
+---------------------------------------
+Tools are the bridge between the LLM's reasoning and the real world.
+Without tools, an agent can only use its training data.
+With tools, an agent can: search the web, query databases, send emails,
+  check system status, calculate values, read files, call APIs.
+
+Tool categories:
+  SEARCH: Web search, document search, vector store search
+  COMPUTATION: Calculator, code execution, data analysis
+  DATA ACCESS: Database queries, API calls, file reading
+  ACTIONS: Send email, create ticket, update record, trigger workflow
+  MULTIMODAL: Image analysis (vision), speech-to-text, OCR
+
+---------------------------------------
+2.2 Tool Definition Requirements — Critical for Exam
+---------------------------------------
+A tool needs three things:
+  1. name: Unique identifier the LLM uses to call it
+  2. description: Natural language explanation — THIS IS CRITICAL
+  3. func: The actual Python function to execute
+
+THE DESCRIPTION IS THE MOST IMPORTANT PART.
+The LLM decides WHEN to use a tool based solely on its description.
+A vague description = wrong tool selection = wrong answers.
+
+GOOD DESCRIPTION TEMPLATE:
+  - What the tool does (one sentence)
+  - When to use it (context/trigger)
+  - What the input should be (format, constraints)
+  - What it returns (so agent knows what to do with it)
+  - What NOT to use it for (prevents misuse)
+
+EXAMPLE:
+  BAD: description="Search for information"
+  GOOD: description="""Search internal documentation for technical answers.
+    Use when the user asks about product features, configuration, or troubleshooting.
+    Input should be a specific search query (3-10 words).
+    Returns: relevant doc excerpts.
+    Do NOT use for real-time data, pricing, or external news."""
+
+---------------------------------------
+2.3 Pydantic Input Validation for Tools
+---------------------------------------
+Use Pydantic BaseModel as args_schema for structured validation:
+
+  class ToolInput(BaseModel):
+    query: str = Field(min_length=3, max_length=200)
+    filters: Optional[List[str]] = None
+
+Benefits:
+  - Input is validated BEFORE tool executes (fail fast)
+  - Clear schema documentation in tool definition
+  - LLM can see field descriptions for better tool calling
+  - Type errors caught at schema validation, not deep in tool logic
+
+---------------------------------------
+2.4 API Integration Best Practices
+---------------------------------------
+Robust API tool implementation must handle:
+
+TIMEOUT: Always set timeout parameter. Network calls can hang indefinitely.
+  Default timeout = 5-10 seconds. Never leave default (None).
+
+HTTP STATUS CODES TO HANDLE:
+  200: Success
+  400: Bad request — don't retry (your fault)
+  401/403: Auth error — don't retry (fix credentials)
+  404: Not found — don't retry (resource doesn't exist)
+  429: Rate limited — retry with backoff (too many requests)
+  500/502/503: Server error — retry with backoff (their fault, transient)
+  504: Gateway timeout — retry with backoff
+
+EXPONENTIAL BACKOFF PATTERN:
+  delay = initial_delay * (backoff_factor ^ attempt_number)
+  Attempt 0: delay = 1s * (2^0) = 1s
+  Attempt 1: delay = 1s * (2^1) = 2s
+  Attempt 2: delay = 1s * (2^2) = 4s
+  Max attempts: 3 is typical. Total wait: 1+2+4 = 7s.
+
+  KEY RULE: Only retry on 5xx and 429. Never retry on 4xx (except 429).
+
+---------------------------------------
+2.5 Multimodal Tools — NVIDIA Vision
+---------------------------------------
+NVIDIA model for vision: microsoft/phi-3-vision-128k-instruct
+  (or other NVIDIA vision models available via API)
+
+Pattern for image analysis:
+  1. Load image file → base64 encode
+  2. Build multimodal message: [{type: text, text: question},
+     {type: image_url, image_url: {url: data:image/jpeg;base64,...}}]
+  3. Send to vision LLM via ChatNVIDIA
+  4. Return response.content
+
+Use cases for vision tools in agents:
+  - Screenshot analysis (error detection from UI screenshots)
+  - Document OCR (extract text from scanned docs)
+  - Image classification (product categorization, defect detection)
+  - Chart/graph reading (extract data from visual reports)
+
+
+================================================================================
+SECTION 3: ERROR HANDLING AND RESILIENCE (Exam Obj 2.4)
+================================================================================
+
+---------------------------------------
+3.1 The Three Resilience Patterns — Must Know All Three
+---------------------------------------
+
+PATTERN 1: RETRY WITH EXPONENTIAL BACKOFF
+  Problem it solves: Transient failures — temporary network blips, brief
+    service overload, occasional 503s that recover within seconds.
+  How it works: Retry the same call N times with increasing delay between.
+  Config: max_retries=3, initial_delay=1s, backoff_factor=2.0
+  When NOT to use: 4xx errors (except 429) — retrying won't fix bad requests.
+  Total max wait time with 3 retries: 1+2+4 = 7 seconds.
+
+PATTERN 2: CIRCUIT BREAKER
+  Problem it solves: Cascading failures — when a downstream service is down
+    for minutes/hours and you don't want your agent to keep hammering it
+    (wasting resources and piling up timeouts).
+  Three states:
+    CLOSED: Normal operation. All requests pass through.
+    OPEN: Failure threshold exceeded (e.g., 5 consecutive failures).
+      ALL requests immediately rejected. Service not called at all.
+    HALF_OPEN: After timeout period (e.g., 60s), allow ONE test request.
+      If success → CLOSED. If failure → back to OPEN.
+  When to use: Long-running outages, prevent resource exhaustion, cascade protection.
+  
+  CLOSED → OPEN: When failure_count >= failure_threshold
+  OPEN → HALF_OPEN: When (now - last_failure_time) > timeout
+  HALF_OPEN → CLOSED: Successful test request
+  HALF_OPEN → OPEN: Failed test request
+
+PATTERN 3: GRACEFUL DEGRADATION
+  Problem it solves: When primary capability fails, provide reduced but
+    still useful functionality rather than hard crash.
+  How it works: Tier of fallbacks:
+    1. Try primary (70B model via NIM)
+    2. If fails → fallback (8B model, smaller, more available)
+    3. If fails → cached response (stale but better than nothing)
+    4. If fails → rule-based response ("I'm experiencing issues...")
+  When to use: Production systems that must never return an error page.
+    User experience > perfect accuracy.
+
+CHOOSING BETWEEN THEM:
+  Transient, seconds-level failures → Retry with backoff
+  Minutes-level outages, cascade risk → Circuit Breaker
+  Capability degradation, fallback scenarios → Graceful Degradation
+  In reality: Use all three together. They're complementary, not alternatives.
+
+---------------------------------------
+3.2 Timeout Management
+---------------------------------------
+Every external call MUST have a timeout.
+
+LAYER 1: HTTP timeout — max time for a single HTTP request (e.g., 5-10s)
+LAYER 2: Agent execution timeout — max time for entire agent loop (e.g., 30s)
+LAYER 3: Tool-level timeout — max time for a specific tool call
+
+AgentExecutor parameters:
+  max_execution_time=30  → entire agent run limited to 30 seconds
+  max_iterations=10      → maximum ReAct loop iterations
+
+For Python-level timeout: use signal.alarm (Unix) or
+  concurrent.futures with future.result(timeout=N)
+
+---------------------------------------
+3.3 Common Failure Scenarios in Exam
+---------------------------------------
+
+"API fails 10% of time with 503, recovers in 5 seconds, user expects <10s"
+→ Retry with exponential backoff (1s + 2s = 3s wait) = well within 10s budget
+
+"Service is down for 30+ minutes, agent keeps timing out"
+→ Circuit Breaker — after N failures, stop calling, save resources
+
+"Primary 70B model endpoint unavailable, users need responses"
+→ Graceful degradation — fall back to 8B model or cached responses
+
+"Tool input comes from user and may be malformed"
+→ Pydantic validation + try/catch + specific error messages
+
+
+================================================================================
+SECTION 4: NVIDIA NIM AND TENSORRT-LLM (Exam Obj 2.5)
+================================================================================
+
+---------------------------------------
+4.1 NIM — What It Is and Why It Matters
+---------------------------------------
+NIM = NVIDIA Inference Microservices.
+Pre-packaged, optimized, containerized LLM deployment.
+
+What NIM gives you over naive model deployment:
+  - TensorRT-LLM optimization (2-8x faster inference)
+  - Automatic request batching (dramatically increases throughput)
+  - KV cache management (reuse attention computation for efficiency)
+  - Multi-GPU tensor parallelism (scale beyond single GPU)
+  - Health check endpoints (/v1/health)
+  - OpenAI-compatible API (drop-in replacement)
+  - Load balancing across instances
+
+Performance comparison:
+  Standard PyTorch:      ~2000ms latency,  ~10 req/s
+  TensorRT-LLM FP16:     ~500ms latency,   ~40 req/s
+  TensorRT-LLM INT8:     ~250ms latency,   ~80 req/s
+  NIM (TRT + batching):  ~200ms latency,   ~100+ req/s
+
+Self-hosted NIM:
+  docker pull nvcr.io/nim/meta/llama-3.1-70b-instruct:latest
+  docker run --gpus all -p 8000:8000 -e NGC_API_KEY=... [container]
+  Then: ChatNVIDIA(base_url="http://localhost:8000/v1", model="...")
+
+Cloud NIM (NVIDIA AI Endpoints):
+  ChatNVIDIA(base_url="https://integrate.api.nvidia.com/v1", nvidia_api_key="...")
+
+---------------------------------------
+4.2 TensorRT-LLM Optimizations — Know These
+---------------------------------------
+
+KERNEL FUSION: Combines multiple GPU operations into one.
+  Less GPU overhead, higher throughput.
+
+QUANTIZATION: Reduce numerical precision.
+  FP32 → FP16: 2x memory reduction, minimal accuracy loss (default)
+  FP16 → INT8: 2x further reduction, small accuracy loss
+  INT8 → INT4: 2x further reduction, noticeable accuracy loss
+  Use case: INT8 for production throughput. INT4 only if memory-constrained.
+
+IN-FLIGHT BATCHING: Process multiple requests simultaneously during generation.
+  Traditional: Wait for one request to finish before starting next.
+  In-flight: Interleave multiple requests at token level. ~4x throughput gain.
+
+KV CACHE: Reuse key/value computations for common prefixes.
+  If many users send similar system prompts, compute once, reuse many times.
+  enable_prefix_caching: True in NIM config.
+
+TENSOR PARALLELISM: Split model across multiple GPUs.
+  tensor_parallel_size=4 → split across 4 GPUs.
+  Enables 70B model on 4x A100s vs requiring single 8x GPU machine.
+
+---------------------------------------
+4.3 Streaming Responses
+---------------------------------------
+Streaming = send tokens to client as they're generated, not waiting for
+full response before sending anything.
+
+Why it matters for UX:
+  Without streaming: User stares at blank screen for 3 seconds, then sees answer.
+  With streaming: User sees answer appearing word by word immediately.
+  Perceived latency = time to first token (TTFT), not total generation time.
+  TTFT with streaming: <200ms. Without: 3-5s. 15-25x perceived improvement.
+
+Implementation: streaming=True on ChatNVIDIA + callbacks or .stream() method.
+
+Callback events to handle:
+  on_llm_new_token: Each token as it's generated (update UI)
+  on_llm_end: Generation complete (finalize UI state)
+  on_llm_error: Error occurred (show error state)
+  on_agent_action: Agent is using a tool (show "thinking" indicator)
+
+Production streaming pattern:
+  Show "Agent is searching..." when tool called (on_agent_action)
+  Stream token by token to UI (on_llm_new_token)
+  Show "✓ Complete" on finish (on_llm_end)
+  Never show raw stack traces in streaming errors
+
+---------------------------------------
+4.4 Model Selection Strategy
+---------------------------------------
+NVIDIA models available via API (key exam examples):
+  meta/llama-3.1-8b-instruct: Fast, cheap, simple tasks
+  meta/llama-3.1-70b-instruct: Powerful, general-purpose, complex tasks
+  microsoft/phi-3-vision-128k-instruct: Vision/multimodal tasks
+
+ROUTING STRATEGY:
+  Short query (<20 words), simple question → 8B model
+  Complex reasoning, multi-step, analysis → 70B model
+  Contains image reference → vision model
+  Implement as pre-classification step using 8B model to classify → route
+
+
+================================================================================
+SECTION 5: CONVERSATION FLOWS AND STATE (Exam Obj 2.5)
+================================================================================
+
+---------------------------------------
+5.1 Conversation Memory Types (LangChain)
+---------------------------------------
+
+ConversationBufferMemory:
+  Keeps ALL messages. Simple but grows unboundedly.
+  Use for: Short sessions where all history matters.
+
+ConversationBufferWindowMemory(k=N):
+  Keeps last N message pairs. Bounded memory.
+  Use for: Most conversational agents. k=10 is reasonable default.
+
+ConversationSummaryMemory:
+  Summarizes old messages, keeps recent ones.
+  Requires an LLM call to summarize.
+  Use for: Long conversations where early context still matters.
+
+ConversationSummaryBufferMemory:
+  Hybrid: Keep recent messages as-is, summarize older ones.
+  Best of both. Most sophisticated but most complex.
+
+---------------------------------------
+5.2 Context-Aware Routing
+---------------------------------------
+Pattern: Analyze conversation context → classify intent → route to handler.
+
+Steps:
+  1. Classify intent from recent messages (use small fast model)
+  2. Detect sentiment (positive/neutral/negative)
+  3. Count turns (long conversation = different handling)
+  4. Route to specialized handler based on classification
+
+Key routing signals:
+  ESCALATION: Negative sentiment + unresolved issue + N turns
+  TECHNICAL: Technical terms, error codes, specific product questions
+  BILLING: Dollar amounts, account numbers, payment questions
+  GENERAL: Anything else
+
+---------------------------------------
+5.3 Adaptive Response Generation
+---------------------------------------
+Adapt responses based on user profile/preferences:
+  verbosity: low (1-2 sentences), medium (balanced), high (detailed)
+  technical_level: beginner (no jargon), intermediate, expert
+  format: conversational, formal, concise (bullet points)
+
+Store preferences in user profile, update based on feedback signals:
+  "Too long" → reduce verbosity
+  "More detail" → increase verbosity
+  "Too technical" → reduce technical_level
+  "I'm an expert" → increase technical_level
+
+
+================================================================================
+SECTION 6: EVALUATION AND REFINEMENT (Exam Obj 2.6)
+================================================================================
+
+---------------------------------------
+6.1 Key Performance Metrics — Know Definitions and Targets
+---------------------------------------
+
+Task Success Rate = (Successful / Total) × 100%. Target: >90%
+Average Response Time = Σ(times) / count. Target: <2 seconds
+Tool Call Accuracy = (Correct tool selections / Total calls) × 100%. Target: >95%
+Error Rate = (Errors / Total) × 100%. Target: <5%
+User Satisfaction = Average user rating. Target: >4/5
+Cost per Request = (Inference + Infrastructure costs) / Total requests.
+
+---------------------------------------
+6.2 A/B Testing Methodology
+---------------------------------------
+Goal: Compare two agent configurations to find which performs better.
+
+Setup:
+  Variant A: Current config (control)
+  Variant B: New config (experiment)
+  Split ratio: 50/50 for equal comparison, can be 90/10 for lower risk
+
+Process:
+  1. Route requests randomly to A or B based on split ratio
+  2. Collect user ratings/satisfaction scores for each
+  3. After sufficient samples (100+ per variant), analyze
+  4. Calculate average rating per variant
+  5. Statistical significance: difference / std_dev > 1.96 (95% confidence)
+  6. Winner = higher average rating
+
+What to A/B test:
+  - Different prompt templates
+  - Different LLM models (8B vs 70B)
+  - Different chain strategies (stuff vs map_reduce)
+  - Different chunking configurations
+  - Different tool descriptions
+
+---------------------------------------
+6.3 Iterative Refinement Loop
+---------------------------------------
+This is the continuous improvement process:
+
+  1. EVALUATE: Run test suite against current agent version
+  2. MEASURE: Calculate success rate, latency, error rate
+  3. IDENTIFY: Find failure patterns (what types of queries fail?)
+  4. HYPOTHESIZE: Generate improvement ideas for each failure pattern
+  5. IMPLEMENT: Apply one improvement at a time
+  6. VALIDATE: Re-run test suite, compare metrics
+  7. DEPLOY: If improved, promote to production
+  8. REPEAT
+
+One change at a time — if you change three things and metrics improve,
+you don't know which change helped.
+
+---------------------------------------
+6.4 Response Validation
+---------------------------------------
+Validate responses before returning to users:
+
+Minimum quality checks:
+  has_content: len(response) > minimum_length
+  relevant: Check key query terms appear in response
+  format: If JSON expected, parse and validate schema
+  no_hallucinations: Check against retrieved sources (for RAG)
+
+Implementation: Wrapper that invokes agent, validates response,
+  retries up to N times if validation fails.
+
+Use LLM-as-judge for higher quality validation:
+  Second LLM call evaluates first LLM's response.
+  Prompt: "Does this response correctly answer the question? Rate 1-5."
+  Only return to user if score >= 4.
+
+
+================================================================================
+SECTION 7: DEBUGGING GUIDE FOR COMMON ISSUES
+================================================================================
+
+ISSUE: Agent loops repeatedly, calls same tool multiple times
+FIX:
+  1. Add max_iterations limit (set it, don't rely on default)
+  2. Add action history tracking — if same action+input seen 3 times, break
+  3. Improve tool descriptions to include "Do NOT repeat this query"
+  4. Add state tracking so agent knows what it has already done
+
+ISSUE: Tool calls fail frequently
+FIX:
+  1. Add Pydantic input validation (catch bad inputs before execution)
+  2. Add retry logic with exponential backoff
+  3. Add debug logging to see exact inputs/outputs
+  4. Test tool independently outside of agent
+
+ISSUE: Slow response times
+FIX:
+  1. Route simple queries to 8B model (not 70B)
+  2. Parallelize independent tool calls (ThreadPoolExecutor)
+  3. Implement caching for repeated queries (hash-based cache)
+  4. Set max_tokens limits appropriate to task
+  5. Deploy via NVIDIA NIM (automatic optimization)
+  6. Enable streaming (improve perceived latency)
+
+ISSUE: Inconsistent/unpredictable responses
+FIX:
+  1. Lower temperature (0.1-0.3 for classification/routing decisions)
+  2. Use structured outputs (Pydantic output parser with schema)
+  3. Add response validation with retry
+  4. Use few-shot examples in prompt to anchor behavior
+
+ISSUE: Context window overflow
+FIX:
+  1. Implement ConversationBufferWindowMemory with appropriate k
+  2. Use ConversationSummaryMemory for long sessions
+  3. Monitor token count, trigger truncation proactively
+  4. Reduce chunk sizes in RAG pipeline
+
+ISSUE: Agent uses wrong tool
+FIX:
+  1. Rewrite tool descriptions to be more specific
+  2. Add "when to use" and "when NOT to use" to descriptions
+  3. Use Pydantic schema so tool clearly shows what input it expects
+  4. Reduce number of tools (fewer choices = easier selection)
+
+
+================================================================================
+SECTION 8: ANTI-PATTERNS (WHAT NOT TO DO)
+================================================================================
+
+SILENT EXCEPTION EATING:
+  BAD: except: pass
+  GOOD: except Exception as e: logger.error(...); return fallback()
+
+UNBOUNDED LOOPS:
+  BAD: while not done: act()
+  GOOD: for i in range(max_iterations): if done: break; act()
+
+HARDCODED PROMPTS:
+  BAD: llm.invoke("You are a bot. Answer: " + query)
+  GOOD: PromptTemplate(input_variables=["query"], template="...")
+
+NO INPUT VALIDATION:
+  BAD: def tool(user_input): return api_call(user_input)
+  GOOD: Validate length, sanitize, check format before calling API
+
+EXPOSING INTERNAL ERRORS:
+  BAD: return f"Error: {str(e)}"  # Exposes stack trace to user
+  GOOD: logger.error(str(e)); return "Service temporarily unavailable"
+
+HARDCODED API KEYS:
+  BAD: api_key = "nvapi-abc123..."
+  GOOD: api_key = os.getenv("NVIDIA_API_KEY")
+
+SEQUENTIAL INDEPENDENT CALLS:
+  BAD: r1 = tool1(a); r2 = tool2(b); r3 = tool3(c)  # 3 seconds total
+  GOOD: ThreadPoolExecutor concurrent execution → 1 second total
+
+IGNORING RATE LIMITS:
+  BAD: [agent.invoke(q) for q in 10000_queries]  # Hammers API
+  GOOD: RateLimitedAgent wrapper with requests-per-minute tracking
+
+
+================================================================================
+SECTION 9: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: API fails 10% of time with 503. Recovers in 5 seconds. Users expect <10s.
+A: Retry with exponential backoff: 3 attempts at 1s, 2s, 4s delays.
+   Total max wait: 7s, well under 10s budget.
+   Only retry 5xx (503 = server error, transient).
+
+SCENARIO 2:
+Q: Agent using 70B model takes 5s/response. 80% are simple FAQs.
+   How to reduce latency while maintaining quality for complex queries?
+A: Hybrid routing — classify query complexity (with fast 8B model), route
+   simple queries to 8B (<1s), complex to 70B (5s). Average latency drops
+   dramatically since 80% hit fast path. Both deployed via NIM.
+
+SCENARIO 3:
+Q: Need to call 5 independent APIs, each takes 1s. Need <2s total response.
+A: Parallelize with ThreadPoolExecutor. All 5 calls execute concurrently
+   → ~1s total + overhead. Sequential = 5s, concurrent = ~1s.
+
+SCENARIO 4:
+Q: Service is down for 30+ minutes. Agent keeps timing out on every request.
+A: Circuit Breaker. After 5 consecutive failures, open the circuit.
+   Requests immediately return error/fallback without calling the service.
+   After 60s, half-open: test one request. If succeeds, close circuit.
+
+SCENARIO 5:
+Q: Agent needs to categorize feedback as positive/negative/neutral then
+   generate appropriate response. Most effective prompting strategy?
+A: Chain-of-Thought + few-shot examples.
+   CoT: Think through the sentiment first, then generate response.
+   Few-shot: Provide 2-3 examples per sentiment class to anchor behavior.
+   Temperature: 0.2-0.3 for classification reliability.
+
+SCENARIO 6:
+Q: Users report agent gives inconsistent answers to same question.
+A: Multiple fixes: Lower temperature (0.1), add structured output parser
+   (forces consistent format), add few-shot examples,
+   add response validation layer with retry.
+
+SCENARIO 7:
+Q: You want to A/B test a new prompt template. How?
+A: Route 50% traffic to old (Variant A) and 50% to new (Variant B).
+   Collect user satisfaction ratings for each.
+   After 100+ samples per variant, compare average ratings.
+   Use statistical significance testing. Winner becomes new production prompt.
+
+SCENARIO 8:
+Q: Production agent sometimes returns partial/truncated responses.
+A: Set appropriate max_tokens (e.g., 1024 for detailed tasks).
+   Add response validation: check minimum length, retry if truncated.
+   If streaming: check on_llm_end fires without truncation error.
+
+
+================================================================================
+SECTION 10: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name the 5 principles of effective agent prompts?
+□ Do I know the 3 types of dynamic prompt chains and when to use each?
+□ Can I explain CoT prompting and when to use/skip it?
+□ Do I know how to write a good tool description (with what NOT to do)?
+□ Can I explain Pydantic input validation for tools?
+□ Do I know which HTTP status codes to retry vs. not retry?
+□ Can I calculate exponential backoff delays (1, 2, 4 seconds)?
+□ Can I describe the 3 circuit breaker states and transitions?
+□ Can I explain graceful degradation with primary/fallback/rule-based tiers?
+□ Do I know what NIM provides over standard model deployment?
+□ Can I name 4 TensorRT-LLM optimizations?
+□ Can I explain quantization levels (FP32→FP16→INT8→INT4) and trade-offs?
+□ Do I understand streaming and TTFT vs. end-to-end latency?
+□ Can I name 4 LangChain memory types and when to use each?
+□ Do I know the 6 key agent performance metrics and their targets?
+□ Can I explain A/B testing setup and analysis process?
+□ Can I describe the iterative refinement loop (7 steps)?
+□ Can I identify the 7 anti-patterns and give the correct alternative?
+□ Can I solve all 8 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 15% of total score — TIED WITH MODULE 1 FOR HIGHEST
+Focus: Prompt engineering, tool integration, error handling (retry/circuit
+  breaker/graceful degradation), NIM/TensorRT-LLM performance, and evaluation.
+Error handling patterns are especially high-probability in scenario questions.
+================================================================================
