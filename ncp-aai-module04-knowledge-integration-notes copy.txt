@@ -1,0 +1,619 @@
+NCP-AAI EXAM — MODULE 4: KNOWLEDGE INTEGRATION AND DATA HANDLING
+Deep Study Notes | Exam Weight: 10% | Study Time: 6-8 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Think of knowledge integration as the "memory extension" layer for agents. The
+base LLM knows what it was trained on — frozen in time, no access to your
+org's proprietary data. Knowledge integration is the bridge between a dumb
+static model and a context-aware, grounded, trustworthy agent. Everything in
+this module is about building that bridge reliably at scale.
+
+Core problem it solves:
+  - LLMs hallucinate when they don't know something
+  - LLMs can't access live/private/specialized data
+  - You can't fine-tune every time data changes
+  - Context windows are finite — you can't stuff everything in
+
+Solution stack: RAG + Vector DBs + Chunking + ETL + Hybrid Search
+
+
+================================================================================
+SECTION 1: KNOWLEDGE INTEGRATION PATTERNS (Exam Obj 4.1, 4.5)
+================================================================================
+
+There are 5 primary patterns. Know when to use each — exam loves scenario Qs.
+
+---------------------------------------
+1. RAG (Retrieval-Augmented Generation)
+---------------------------------------
+How it works: Retrieve relevant chunks → Stuff into prompt → LLM generates.
+Best for: Q&A, summarization, document grounding, reducing hallucinations.
+Latency: Medium (retrieval + generation).
+Key characteristic: Output is generated text informed by retrieved context.
+
+---------------------------------------
+2. Semantic Search (Embedding/Vector Search Only)
+---------------------------------------
+How it works: Embed query → Find nearest vectors → Return matching docs.
+Best for: Document discovery, "find me similar things" use cases.
+Latency: Low (no LLM generation step).
+Key characteristic: Returns documents, not generated answers.
+
+---------------------------------------
+3. Hybrid Search
+---------------------------------------
+How it works: Combines semantic (vector) search + keyword (BM25) search.
+Best for: When you need both meaning AND exact term matching (e.g., product
+  codes, legal citations, technical specs with specific terminology).
+Latency: Medium.
+Key characteristic: Handles vocabulary mismatch that pure semantic search misses.
+
+---------------------------------------
+4. Knowledge Graph
+---------------------------------------
+How it works: Entities and relationships stored as a graph; traversal-based query.
+Best for: Complex multi-hop reasoning (e.g., "who works for who, and what did
+  they approve?"), structured factual lookups.
+Latency: Low to Medium (depends on graph depth).
+Key characteristic: Explicit relationships, not just fuzzy similarity.
+
+---------------------------------------
+5. SQL / Structured DB
+---------------------------------------
+How it works: Agent generates SQL → executes query → gets structured result.
+Best for: Analytics, reporting, numeric queries over known schemas.
+Latency: Low.
+Key characteristic: Exact answers from structured data (no ambiguity).
+
+EXAM PATTERN DECISION TREE:
+  Q: Do you need to generate natural language from retrieved facts? → RAG
+  Q: Do you need exact term matching AND semantic meaning? → Hybrid
+  Q: Do you need to navigate relationships between entities? → Knowledge Graph
+  Q: Do you need precise numbers/filters over structured data? → SQL
+  Q: Do you just need to find similar documents? → Semantic Search
+
+
+================================================================================
+SECTION 2: RAG PIPELINES IN DEPTH (Exam Obj 4.1)
+================================================================================
+
+---------------------------------------
+2.1 The Six-Component Pipeline
+---------------------------------------
+Every RAG system has these 6 steps — know them cold:
+
+  1. Document Loader   → Ingests raw data (PDF, DOCX, CSV, JSON, web)
+  2. Text Splitter     → Breaks docs into chunks (size, overlap, strategy)
+  3. Embedding Model   → Converts text chunks to dense vectors
+  4. Vector Store      → Stores vectors + enables similarity search
+  5. Retriever         → Queries vector store, returns top-k relevant chunks
+  6. LLM               → Receives query + retrieved chunks → generates answer
+
+The pipeline is: Offline (1-4 happen at ingest time) + Online (5-6 happen at query time).
+
+Offline = build the knowledge base
+Online = answer user queries against it
+
+
+
+Pre-retrieval additions:
+
+Query Rewriter — fixes typos, expands acronyms, decontextualizes ("it" → actual entity)
+Query Router — decides which index/source to hit (legal docs vs. code vs. KB)
+Metadata Filter — pre-filters by tenant, date, permissions before vector search
+
+Post-retrieval additions:
+
+Deduplicator — kills near-identical chunks from different sources
+Context Compressor — trims chunks to only the relevant sentences (LongLLMLingua, LLM-based)
+Citation Tracker — keeps chunk→source mapping so the LLM can cite
+
+Wrapping the whole thing:
+
+Guardrails — input/output safety, PII redaction, prompt-injection defense
+Cache — semantic cache on queries + chunk-level cache for hot retrievals
+Evaluator — RAGAS, faithfulness/groundedness scoring on responses
+Observability — LangSmith/Langfuse traces, retrieval hit-rate metrics
+Feedback Loop — thumbs up/down → retraining signal for reranker
+
+Real-world full stack = ~15 components. Most teams start with 7 and add the rest as failure modes appear.
+
+---------------------------------------
+2.2 The Four Chain Types — Critical for Exam
+---------------------------------------
+This is a high-probability exam topic. Know all four.
+
+STUFF:
+  - Takes all retrieved docs and stuffs them into one prompt
+  - Fastest, simplest
+  - LIMITED by context window size
+  - Works when retrieved chunks are small and few
+  - Best for: Small knowledge bases, quick prototyping
+
+MAP_REDUCE:
+  - Each doc is summarized/answered independently (map step)
+  - Summaries are then combined and a final answer generated (reduce step)
+  - Runs in PARALLEL — good for large doc sets
+  - More expensive (multiple LLM calls)
+  - Best for: Large numbers of retrieved docs, scalability matters
+
+REFINE:
+  - Processes docs one by one, iteratively refining the answer
+  - Each step: "Given current answer and new doc, refine the answer"
+  - SEQUENTIAL — slower but preserves nuance
+  - Best for: Cases where context from earlier docs should inform later ones
+
+MAP_RERANK:
+  - Each doc gets scored alongside an answer
+  - The highest-scored response wins
+  - Returns single best answer with confidence
+  - Best for: Cases where you want ranked confidence, not synthesis
+
+MEMORY AID: Stuff=simple, MapReduce=parallel scale, Refine=iterative depth,
+MapRerank=confidence scoring
+
+---------------------------------------
+2.3 Advanced RAG Patterns
+---------------------------------------
+
+Multi-Query RAG:
+  Problem: A single query might miss relevant docs if phrased narrowly.
+  Solution: LLM generates multiple reformulations of the query, all are used
+    for retrieval, results are deduplicated and merged.
+  Why it helps: Covers more semantic ground, improves recall.
+
+Parent Document Retriever:
+  Problem: Small chunks retrieve well but lack full context when read.
+  Solution: Index SMALL chunks for search (high precision), but return the
+    FULL PARENT document when a chunk matches.
+  Config: child_splitter (small, ~400 chars) + parent_splitter (larger, ~2000 chars)
+  Why it helps: Best of both worlds — precise retrieval, full context delivery.
+
+Contextual Compression:
+  Problem: Retrieved docs contain lots of irrelevant filler.
+  Solution: After retrieval, compress/filter each doc to only the relevant portion.
+  Uses an LLM as a compressor — more LLM calls, but cleaner context.
+
+
+================================================================================
+SECTION 3: VECTOR DATABASES (Exam Obj 4.2)
+================================================================================
+
+---------------------------------------
+3.1 The Comparison Table — Know This
+---------------------------------------
+
+FAISS (Facebook AI Similarity Search):
+  - Type: In-memory, local
+  - Strengths: Extremely fast, simple setup, great for dev/testing
+  - Limitations: Not distributed, data lost on restart unless serialized,
+    not suitable for real-time updates at scale
+  - Use case: Development, prototyping, small datasets (<1M vectors)
+
+Milvus:
+  - Type: Distributed, open-source, production-grade
+  - Strengths: Horizontal scaling, persistent storage, real-time updates,
+    rich index support (HNSW, IVF, PQ)
+  - Limitations: Operationally complex to self-host
+  - Use case: Large-scale production (10M+ documents), enterprise RAG
+  - DEFAULT PRODUCTION CHOICE in exam scenarios
+
+Chroma:
+  - Type: Embedded (runs in-process) with optional persistence
+  - Strengths: Easy to set up, persistent by default, Python-native
+  - Use case: Small to medium production deployments, local agent use
+
+Pinecone:
+  - Type: Fully managed cloud service
+  - Strengths: No ops burden, auto-scaling, managed updates
+  - Limitations: Cloud dependency, cost
+  - Use case: Cloud-native apps that want managed infra
+
+Weaviate:
+  - Type: Hybrid vector+graph DB
+  - Strengths: GraphQL API, multimodal support, structured + semantic queries
+  - Use case: Complex queries that combine structured filters + semantic search
+
+DECISION RULE FOR EXAM:
+  Dev/small = FAISS
+  Large scale production / real-time updates = Milvus
+  Managed cloud = Pinecone
+  Multimodal / complex queries = Weaviate
+
+---------------------------------------
+3.2 Vector Index Types — Critical
+---------------------------------------
+Three major index types. Exam will test your understanding of trade-offs.
+
+IVF (Inverted File Index):
+  - How: Divides vector space into nlist clusters (Voronoi cells)
+  - At query time: Only searches nearest clusters, not all vectors
+  - Trade-off: Fast search, slight accuracy loss (misses vectors near cluster edges)
+  - Param: nlist (number of clusters) — higher = more clusters = better accuracy
+    but slower build time
+
+HNSW (Hierarchical Navigable Small World):
+  - How: Graph-based index, multi-layered graph structure
+  - At query time: Navigates graph layers from coarse to fine
+  - Trade-off: High accuracy, fast query, but high memory usage
+  - Params: M (connections per node), efConstruction (build-time depth)
+  - Best for: When accuracy is paramount, memory is available
+
+PQ (Product Quantization):
+  - How: Compresses vectors by splitting into subvectors, each quantized
+  - Trade-off: Dramatic memory reduction, some accuracy loss
+  - Best for: Very large datasets where memory is the bottleneck
+  - Often combined with IVF: IVF_PQ
+
+RULE OF THUMB:
+  Accuracy critical → HNSW
+  Speed critical → IVF
+  Memory constrained / very large scale → IVF_PQ
+
+Metric Types:
+  L2 (Euclidean): Raw distance in vector space
+  IP (Inner Product): Dot product, used for normalized embeddings
+  Cosine: Angle between vectors (often preferred for semantic similarity)
+
+
+================================================================================
+SECTION 4: CHUNKING STRATEGIES (Exam Obj 4.1, 4.4)
+================================================================================
+
+---------------------------------------
+4.1 Why Chunking Matters
+---------------------------------------
+The chunk is the atomic unit of retrieval. Bad chunking = bad retrieval = bad
+answers, regardless of how good your LLM is. Chunking is often underestimated
+but is one of the highest-leverage decisions in RAG system design.
+
+The fundamental tension:
+  Too small → chunk loses context (a sentence about X without surrounding
+    explanation of what X is)
+  Too large → chunk includes too much irrelevant content, dilutes signal,
+    might exceed context window
+
+Overlap solves boundary problem: without overlap, a concept split across two
+chunk boundaries gets lost. With overlap, it appears in both adjacent chunks,
+ensuring at least one gets retrieved.
+
+---------------------------------------
+4.2 The Three Primary Chunking Methods
+---------------------------------------
+
+FIXED-SIZE CHUNKING:
+  Simple, fast, dumb. Split every N characters with optional separator.
+  Use when: Low-stakes use cases, uniform content, quick prototyping.
+  Problem: Ignores document structure entirely.
+
+RECURSIVE CHUNKING (General Recommended Default):
+  Tries a list of separators in order: ["\n\n", "\n", ". ", " ", ""]
+  Splits on paragraph breaks first, then sentences, then words, then chars.
+  Respects natural document structure as much as possible.
+  Use when: General-purpose, mixed document types, technical docs.
+  This is the go-to default in most production RAG systems.
+
+SEMANTIC CHUNKING:
+  Uses embeddings to detect where "meaning shifts" in text.
+  Compares embedding similarity between consecutive sentences; when similarity
+    drops below a threshold, it's a chunk boundary.
+  Much higher quality but computationally expensive (requires embedding every sentence).
+  Breakpoint types: percentile (e.g., bottom 5% of similarity scores become splits)
+    or standard_deviation.
+  Use when: Legal, medical, complex narrative documents where semantic coherence
+    is critical. Quality over cost.
+
+LANGUAGE-AWARE (CODE):
+  Uses language-specific AST-aware splitters that understand function/class
+    boundaries in code.
+  Preserves logical code units (don't split in the middle of a function).
+  Use when: Your knowledge base contains code.
+
+---------------------------------------
+4.3 Chunking Decision Matrix
+---------------------------------------
+
+Technical Docs:   800-1200 chars, 200 overlap, Recursive
+Legal Documents:  1500-2000 chars, 300 overlap, Semantic
+Chat Logs:        500-800 chars, 100 overlap, Fixed
+Code:             1000-1500 chars, 200 overlap, Language-aware
+Tables:           Keep intact, 0 overlap, Custom (don't split tables)
+
+WHY TABLES DON'T SPLIT: A table cell has no meaning without its header row.
+Always preserve table integrity as a single chunk.
+
+---------------------------------------
+4.4 Parent Document Retriever — Revisited
+---------------------------------------
+This is an advanced chunking pattern worth understanding deeply.
+Index child chunks (small, ~400 chars) for high-precision vector search.
+Store parent chunks (large, ~2000 chars) in a separate docstore.
+When a child chunk matches, return the full parent.
+Net effect: Precision of small chunks + context richness of large chunks.
+
+
+================================================================================
+SECTION 5: HYBRID SEARCH AND RERANKING (Exam Obj 4.1)
+================================================================================
+
+---------------------------------------
+5.1 Why Hybrid Search Exists
+---------------------------------------
+Pure vector search has a vocabulary mismatch problem.
+Example: Query is "CUDA out of memory error" — vector search might retrieve
+  docs about "GPU memory management" (semantically similar) but miss a doc
+  that literally says "CUDA OOM" because the specific acronym isn't embedded
+  the same way.
+
+BM25 (keyword search) is the classic IR algorithm (TF-IDF variant).
+It excels at exact term matching, rare terms, proper nouns, version numbers,
+  error codes, model names.
+
+Combining both: you get semantic understanding AND lexical precision.
+
+---------------------------------------
+5.2 EnsembleRetriever — Know the Weights
+---------------------------------------
+Weights define the blend: [0.7, 0.3] means 70% weight to semantic results,
+  30% weight to keyword results.
+Results are ranked by weighted reciprocal rank fusion (RRF).
+Typical starting point: 70/30 or 60/40 favoring semantic.
+Adjust toward keyword if your domain has lots of specific terminology.
+
+---------------------------------------
+5.3 Reranking — The Second Pass
+---------------------------------------
+Problem: Even with hybrid search, the top-10 retrieved docs may include noise.
+Solution: Use a reranker as a second-pass filter.
+
+Two approaches:
+1. LLM-based extraction (ContextualCompressionRetriever): LLM reads each chunk
+   and extracts only the portion relevant to the query. Expensive but high quality.
+2. Cross-encoder reranker (e.g., Cohere Rerank, NVIDIA reranker NIM):
+   A specialized small model scores (query, document) pairs directly.
+   Much faster than full LLM, purpose-built for relevance scoring.
+
+Pattern: Retrieve top-20 with hybrid search → rerank to top-5 → stuff into LLM.
+This is the standard production pattern for high-quality RAG.
+
+
+================================================================================
+SECTION 6: ETL PIPELINES FOR ENTERPRISE KNOWLEDGE (Exam Obj 4.3, 4.4)
+================================================================================
+
+---------------------------------------
+6.1 ETL in the RAG Context
+---------------------------------------
+Extract: Load raw data from source systems (PDF, DOCX, CSV, JSON, web, databases,
+  SharePoint, S3, Confluence, etc.)
+Transform: Clean, normalize, chunk, enrich with metadata
+Load: Upsert into vector store
+
+Production ETL must handle:
+  - Multiple file types (document loaders per type)
+  - Errors gracefully (malformed files, encoding issues)
+  - Incremental updates (don't re-ingest unchanged docs)
+  - Metadata preservation (source, timestamp, author, version)
+  - Deduplication (same doc ingested twice = degraded retrieval)
+
+---------------------------------------
+6.2 Data Quality Checks — What the Exam Cares About
+---------------------------------------
+These are the checks you must implement before ingesting into a vector store:
+
+1. has_content: Document is not empty
+2. min_length: At least 100 chars (filters out blank pages, headers-only)
+3. has_metadata: Source attribution is present
+4. encoding_valid: UTF-8 clean (corrupted PDFs cause garbage embeddings)
+5. no_excessive_whitespace: Whitespace ratio < 50% (scanned doc artifacts)
+
+Additional production checks:
+6. Language detection: Filter non-target-language docs if needed
+7. Duplicate detection: Hash doc content, skip if already indexed
+8. PII scrubbing: Remove SSNs, emails, etc. before ingesting sensitive docs
+9. Table/image detection: Flag for special handling (don't embed image pixels)
+
+The GIGO principle applies hard here: Garbage In → Garbage Embeddings →
+  Garbage Retrieval → Garbage Answers. Data quality is not optional.
+
+---------------------------------------
+6.3 Metadata Strategy — Underappreciated
+---------------------------------------
+Every chunk should carry metadata:
+  - source: Original file path/URL
+  - page_number: For PDFs
+  - ingestion_time: ISO timestamp
+  - document_type: pdf, docx, etc.
+  - version: Document version if applicable
+  - department / domain: For multi-tenant filtering
+
+Why metadata matters:
+1. Source attribution: Users and auditors need to know WHERE the answer came from
+2. Metadata filtering: Retriever can filter by source, date, department
+   before similarity search (hybrid metadata + vector filter = precision)
+3. Freshness: You can expire/invalidate old chunks by ingestion_time
+
+---------------------------------------
+6.4 Incremental vs Full Re-ingestion
+---------------------------------------
+Full re-ingestion: Delete all vectors, re-ingest everything.
+  Simple, correct, expensive at scale.
+
+Incremental ingestion: Hash each doc, compare to stored hash. Only ingest
+  changed or new documents. Delete vectors for removed documents.
+  Complex but necessary for large knowledge bases.
+
+Production pattern: Hash-based change detection + upsert by document ID.
+
+
+================================================================================
+SECTION 7: NVIDIA-SPECIFIC DETAILS (Exam will test this)
+================================================================================
+
+---------------------------------------
+7.1 NVIDIA Embedding Model
+---------------------------------------
+Model: nvidia/nv-embed-v1
+  - Optimized for accuracy AND throughput
+  - 1024-dimensional embedding output (hence dim=1024 in Milvus schema)
+  - Used via NVIDIAEmbeddings class in LangChain integration
+  - Accessed through NVIDIA AI Endpoints (API key required)
+  - Optimized for enterprise RAG use cases
+
+Why NVIDIA embeddings vs generic?
+  - Tuned for technical/scientific domains
+  - Better recall on domain-specific terminology
+  - Designed to pair with NVIDIA inference stack (NIM)
+
+---------------------------------------
+7.2 NVIDIA LLM Endpoint
+---------------------------------------
+LLM used in examples: meta/llama-3.1-70b-instruct via ChatNVIDIA class
+Accessed through NVIDIA AI Endpoints (api.nvidia.com)
+NIM (NVIDIA Inference Microservices) can host these locally for air-gapped.
+
+---------------------------------------
+7.3 NIM Relevance to This Module
+---------------------------------------
+For production RAG at scale, the embedding model and LLM can be deployed as
+NIM containers on-prem:
+  - Embedding NIM: Handles high-throughput embedding generation at ingest time
+  - LLM NIM: Handles generation with guaranteed low latency
+  - Scales horizontally on NVIDIA GPU clusters
+  - Relevant for your SENTINEL architecture — full air-gap, on-prem inference
+
+
+================================================================================
+SECTION 8: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: Legal document RAG system. Best chunking?
+A: Semantic chunking with high threshold (90-95 percentile).
+WHY: Legal text has long, dense sentences where meaning doesn't align to fixed
+  character boundaries. Semantic chunking preserves argumentative coherence.
+  Fixed chunking would split mid-clause, destroying legal reasoning.
+
+SCENARIO 2:
+Q: Need to index 10M documents with real-time updates. Which vector DB?
+A: Milvus (distributed).
+WHY: FAISS is in-memory only — no persistence, no horizontal scale, no
+  real-time update support. Milvus is built for exactly this: distributed,
+  persistent, supports live insert/delete, scales to billions of vectors.
+
+SCENARIO 3:
+Q: Users complain RAG misses documents with exact error codes like "E-2045".
+A: Switch from pure semantic to hybrid search (Ensemble with BM25).
+WHY: Exact alphanumeric codes/IDs don't embed well. Vector search will find
+  "similar errors" but might miss the specific code. BM25 will find exact
+  term matches. Hybrid combines both.
+
+SCENARIO 4:
+Q: Retrieved docs are correct but LLM answer is vague and unfocused.
+A: Add reranking + contextual compression before passing to LLM.
+WHY: Correct docs are retrieved but include too much noise. Reranker filters
+  to most relevant subset. Compressor extracts only relevant portions.
+  Less noise → more focused answer.
+
+SCENARIO 5:
+Q: Chain type for 50 documents that need to be synthesized into one answer?
+A: map_reduce.
+WHY: Stuff would overflow the context window. Map_reduce processes each doc
+  in parallel (map), then synthesizes (reduce). Handles scale.
+
+SCENARIO 6:
+Q: Your RAG system returns correct chunks but the answer misses context from
+   adjacent paragraphs.
+A: Implement Parent Document Retriever.
+WHY: Chunks are too small to carry full context. PDR retrieves small precise
+  chunks but returns full parent document for LLM consumption.
+
+SCENARIO 7:
+Q: Single query RAG system misses relevant docs when user asks in different
+   ways.
+A: Implement Multi-Query RAG.
+WHY: Different phrasings of the same question map to different embedding
+  spaces. Multi-query generates variants, broadens coverage, improves recall.
+
+
+================================================================================
+SECTION 9: KEY DEFINITIONS GLOSSARY
+================================================================================
+
+RAG: Retrieval-Augmented Generation — pattern of retrieving external context
+  to augment LLM generation, reducing hallucination and enabling live data access.
+
+Embedding: Dense numerical vector representation of text in high-dimensional
+  space. Semantically similar texts have similar (close) embeddings.
+
+Vector Store / Vector Database: Specialized database that stores embeddings and
+  supports approximate nearest neighbor (ANN) search for semantic retrieval.
+
+Chunking: Process of splitting large documents into smaller pieces for indexing.
+  Chunk size and overlap are key hyperparameters.
+
+Overlap: Number of characters/tokens shared between consecutive chunks. Prevents
+  information loss at chunk boundaries.
+
+BM25: Best Match 25. Probabilistic keyword ranking algorithm. Classic TF-IDF
+  variant used in lexical/keyword search. Foundation of hybrid search.
+
+Hybrid Search: Combination of vector (semantic) search and keyword (BM25) search.
+  Results merged via reciprocal rank fusion or weighted scoring.
+
+Reranker: Model that takes (query, document) pairs and scores relevance. Used as
+  second-pass filter to improve precision after initial retrieval.
+
+IVF: Inverted File Index. Partitions vector space into clusters for faster search
+  at the cost of slight accuracy reduction.
+
+HNSW: Hierarchical Navigable Small World. Graph-based ANN index. High accuracy,
+  fast query, high memory usage.
+
+PQ (Product Quantization): Vector compression technique. Reduces memory
+  dramatically at the cost of some accuracy. Used in IVF_PQ.
+
+ETL: Extract, Transform, Load. Pipeline for ingesting, cleaning, and loading
+  data into the knowledge base.
+
+Metadata filtering: Using structured metadata (source, date, category) to
+  pre-filter the vector search space before similarity scoring.
+
+NIM (NVIDIA Inference Microservices): Containerized, optimized inference
+  services for LLMs and embedding models. Key to NVIDIA's enterprise AI stack.
+
+nv-embed-v1: NVIDIA's production embedding model. 1024-dim output. Optimized
+  for enterprise RAG accuracy and throughput.
+
+
+================================================================================
+SECTION 10: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name all 5 knowledge integration patterns and their use cases?
+□ Do I know the 6 components of a RAG pipeline in order?
+□ Can I explain all 4 chain types (stuff, map_reduce, refine, map_rerank)?
+□ Do I know when to use each chain type based on context window and doc count?
+□ Can I compare FAISS vs Milvus vs Chroma vs Pinecone vs Weaviate?
+□ Can I explain IVF vs HNSW vs PQ trade-offs?
+□ Do I know the 3 main chunking strategies and when to use each?
+□ Can I explain why overlap matters?
+□ Do I know the chunking guidelines per document type?
+□ Can I explain why hybrid search beats pure semantic for exact terms?
+□ Do I understand BM25 + vector ensemble weighting?
+□ Can I explain the reranking pattern (retrieve 20, rerank to 5)?
+□ Do I know what data quality checks to run before ingestion?
+□ Can I explain metadata strategy and why it matters for filtering?
+□ Do I know nvidia/nv-embed-v1 and its dimension (1024)?
+□ Do I understand what NIM is and how it fits into production RAG?
+□ Can I solve the 7 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 10% of total score
+Focus: RAG pipeline design, vector DB selection, chunking strategy, hybrid
+  search, ETL quality checks. These are the five pillars. Master all five.
+================================================================================

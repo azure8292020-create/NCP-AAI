@@ -1,0 +1,682 @@
+NCP-AAI EXAM — MODULE 3: EVALUATION AND TUNING
+Deep Study Notes | Exam Weight: 13% | Study Time: 7-9 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Evaluation is how you know if your agent is actually good. Without it, you're
+flying blind — you can't tell if a prompt change helped, if a new model is
+better, or if production quality is degrading. This module is about building
+the measurement infrastructure that turns guesswork into engineering.
+
+The core tension in evaluation: Automated metrics are cheap and fast but
+miss nuance. Human feedback is expensive and slow but catches what matters.
+Production systems use BOTH — automated for scale, human for quality.
+
+Three evaluation layers:
+  1. RETRIEVAL: Did the agent find the right information?
+  2. GENERATION: Did the agent produce a good response?
+  3. RAG HOLISTIC: Is the response faithful to sources? Is it relevant?
+
+Plus a fourth cross-cutting layer: PERFORMANCE (latency, cost, throughput).
+
+
+================================================================================
+SECTION 1: EVALUATION DIMENSIONS (Exam Obj 3.1, 3.2)
+================================================================================
+
+Know all eight evaluation dimensions and what they measure:
+
+ACCURACY: Correctness of responses.
+  Metrics: Precision, Recall, F1, Exact Match
+  
+RELEVANCE: Appropriateness to the query asked.
+  Metrics: Semantic similarity scores, relevance ratings
+
+FAITHFULNESS (GROUNDEDNESS): Is the response supported by retrieved context?
+  This is the anti-hallucination metric. Critical for RAG.
+  Metric: Faithfulness score from RAGAS
+
+LATENCY: How fast does the agent respond?
+  Metrics: P50, P95, P99 response times
+  Why percentiles matter: P50 = typical user. P99 = worst 1% of users.
+  P95 is the standard SLA metric — 95% of users experience this or better.
+
+COST: Resource consumption.
+  Metrics: Tokens used, API cost per request, compute time
+  Cost scales with: tokens in + tokens out + model size
+
+ROBUSTNESS: Handles edge cases without crashing.
+  Metrics: Error rate, recovery success rate, behavior on malformed input
+
+SAFETY: Avoids harmful outputs.
+  Metrics: Toxicity score, guardrail trigger rate
+
+USER SATISFACTION: Human perception of quality.
+  Metrics: Ratings (1-5), thumbs up/down, NPS, CSAT
+
+THE KEY TRADE-OFF (Exam Favorite):
+  Improving accuracy OFTEN increases latency and cost.
+  Scenario questions test your ability to navigate this.
+  Example: "Agent A: 85% accuracy, 1.5s. Agent B: 87% accuracy, 2.5s. SLA=2s."
+  Answer: Agent A — accuracy gain doesn't justify SLA violation.
+
+
+================================================================================
+SECTION 2: RETRIEVAL METRICS — KNOW THE FORMULAS (Exam Obj 3.1)
+================================================================================
+
+These are the metrics for measuring HOW GOOD your retrieval is.
+(How well does the vector store / search find the right documents?)
+
+---------------------------------------
+2.1 Precision@K
+---------------------------------------
+Definition: Of the top K retrieved documents, what fraction are actually relevant?
+Formula: Precision@K = (# relevant docs in top K) / K
+Range: 0.0 to 1.0
+
+Example: You retrieve 5 docs (K=5). 3 are relevant.
+  Precision@5 = 3/5 = 0.60
+
+When to use: When you care about quality of results more than completeness.
+  Users typically look at top results only.
+
+EXAM TRAP: Precision@K can be low even when all relevant docs ARE retrieved,
+  if there are many irrelevant docs mixed in.
+
+---------------------------------------
+2.2 Recall@K
+---------------------------------------
+Definition: Of all relevant documents in the corpus, what fraction appear in top K?
+Formula: Recall@K = (# relevant docs in top K) / (total relevant docs)
+Range: 0.0 to 1.0
+
+Example: 4 relevant docs exist in corpus. You retrieve 5 docs (K=5), 3 are relevant.
+  Recall@5 = 3/4 = 0.75
+
+When to use: When completeness matters — you need to find ALL relevant info.
+  Medical diagnosis, legal research, compliance checks.
+
+EXAM TRAP: Higher K always increases recall but decreases precision.
+  This is the fundamental retrieval trade-off.
+
+---------------------------------------
+2.3 F1 Score
+---------------------------------------
+Formula: F1 = 2 × (Precision × Recall) / (Precision + Recall)
+Use when: You want a balanced metric between precision and recall.
+
+Example: Precision=0.60, Recall=0.75
+  F1 = 2 × (0.60 × 0.75) / (0.60 + 0.75) = 0.90 / 1.35 = 0.667
+
+---------------------------------------
+2.4 MRR (Mean Reciprocal Rank)
+---------------------------------------
+Definition: How quickly does the first relevant result appear?
+Formula: MRR = 1 / (rank of first relevant result)
+Range: 0.0 to 1.0 (higher = relevant doc appears sooner)
+
+Examples:
+  First relevant doc at rank 1 → MRR = 1.0 (best)
+  First relevant doc at rank 2 → MRR = 0.5
+  First relevant doc at rank 5 → MRR = 0.2
+
+When to use: When users only look at the TOP result.
+  Most important for search/autocomplete use cases.
+
+---------------------------------------
+2.5 NDCG (Normalized Discounted Cumulative Gain)
+---------------------------------------
+Definition: Quality of ranking with position weighting.
+  Documents at higher positions are worth more than documents at lower positions.
+  Normalized = compared to ideal ranking.
+
+When to use: When ranking ORDER matters (not just which docs are retrieved,
+  but whether the BEST doc is at position 1 vs. position 5).
+
+Key insight: A perfect ranking (NDCG=1.0) puts the most relevant doc first,
+  then second most relevant, etc. Any deviation from ideal lowers NDCG.
+
+METRIC SELECTION GUIDE:
+  "Do users look at multiple results?" → Precision@K, Recall@K
+  "Do users only look at top result?" → MRR
+  "Does ranking order matter?" → NDCG
+  "Want balanced precision+recall?" → F1
+
+
+================================================================================
+SECTION 3: GENERATION METRICS (Exam Obj 3.1)
+================================================================================
+
+These measure HOW GOOD the text the agent generates is.
+
+---------------------------------------
+3.1 BLEU (Bilingual Evaluation Understudy)
+---------------------------------------
+What it measures: N-gram overlap between generated text and reference text.
+Range: 0.0 to 1.0 (higher = more overlap with reference)
+
+How it works: Compares unigrams (single words), bigrams (word pairs), etc.
+  If generated text shares many phrases with reference → high BLEU.
+
+Best for: Tasks where EXACT wording matters (translation, code generation).
+Limitation: Penalizes paraphrasing. If meaning is the same but words differ,
+  BLEU gives a low score. Bad for conversational agents.
+
+---------------------------------------
+3.2 ROUGE (Recall-Oriented Understudy for Gisting Evaluation)
+---------------------------------------
+What it measures: How much of the reference appears in the generated text.
+  Recall-focused (vs. BLEU which is precision-focused).
+
+Three variants:
+  ROUGE-1: Unigram (single word) overlap
+  ROUGE-2: Bigram (two-word phrase) overlap
+  ROUGE-L: Longest Common Subsequence (sequence order matters)
+
+Best for: Summarization quality. Did the generated summary capture
+  the key points from the reference summary?
+
+Example: Reference: "The cat sat on the mat."
+  Candidate: "A cat was sitting on the mat."
+  ROUGE-1 = overlap of words / reference words = ~0.6
+
+---------------------------------------
+3.3 BERTScore
+---------------------------------------
+What it measures: SEMANTIC similarity using contextual embeddings.
+  Not word overlap — meaning overlap. Uses BERT embeddings.
+
+Range: 0.0 to 1.0 (higher = more semantically similar)
+
+Why it's better: Two sentences can mean the same thing with completely
+  different words. BLEU/ROUGE would score low. BERTScore scores high.
+
+Best for: When MEANING matters more than exact wording.
+  Conversational agents, question answering, general-purpose evaluation.
+
+EXAM DECISION: "Meaning matters" → BERTScore. "Exact words matter" → BLEU.
+
+METRIC vs. USE CASE MATRIX:
+  Translation / Code: BLEU (exact match important)
+  Summarization: ROUGE (recall of key points)
+  Q&A / Conversation: BERTScore (semantic meaning)
+  RAG Grounding: Faithfulness (custom RAG metric)
+
+
+================================================================================
+SECTION 4: RAG-SPECIFIC METRICS — MOST EXAM-RELEVANT (Exam Obj 3.1)
+================================================================================
+
+These are the metrics specifically designed for RAG systems.
+They test properties that BLEU/ROUGE don't capture.
+RAGAS framework implements these metrics.
+
+---------------------------------------
+4.1 Faithfulness (Groundedness) — CRITICAL
+---------------------------------------
+Definition: Are the claims in the response actually supported by the
+  retrieved context? This is the hallucination detector.
+
+Score = fraction of response claims that can be traced to context sources.
+Range: 0.0 to 1.0 (1.0 = every claim is grounded in retrieved context)
+
+Why it matters: An agent can generate confident-sounding text that has
+  NOTHING to do with the retrieved docs. High faithfulness = no hallucination.
+
+When to prioritize: Any domain where accuracy is critical (medical, legal,
+  financial, compliance). Always important in production RAG.
+
+EXAM TRAP: An agent can have perfect faithfulness but still give wrong answers
+  if the retrieved context itself is wrong. Faithfulness is about
+  grounding, not about factual correctness of the source.
+
+---------------------------------------
+4.2 Answer Relevance
+---------------------------------------
+Definition: Does the response actually address the question asked?
+  Measures whether the answer is ON-TOPIC for the query.
+
+Score = semantic similarity between question and answer.
+Can be high even if faithfulness is low (agent gives relevant but made-up answer).
+
+Example low answer relevance: User asks "What are side effects of ibuprofen?"
+  Agent responds "Ibuprofen is a common pain reliever." — relevant topic,
+  but doesn't answer the question asked.
+
+---------------------------------------
+4.3 Context Relevance
+---------------------------------------
+Definition: Is the RETRIEVED context actually useful for answering the question?
+  Measures quality of the retrieval step specifically.
+
+Identifies: When retriever finds semantically similar but topically irrelevant docs.
+  If context relevance is low → improve chunking, embedding model, or retrieval.
+
+---------------------------------------
+4.4 Context Recall
+---------------------------------------
+Definition: Does the retrieved context contain the information needed to
+  answer the question? (Does ground truth appear in retrieved context?)
+
+High context recall = retriever found the right source material.
+Low context recall = retriever missed relevant documents → fix retrieval.
+
+---------------------------------------
+4.5 Context Precision
+---------------------------------------
+Definition: Of all retrieved context, how much is actually needed/useful?
+
+Low context precision = retriever returning too much noise with the signal.
+Symptom: Agent confuses irrelevant context with relevant context → wrong answer.
+
+THE FIVE RAGAS METRICS:
+  faithfulness: Response grounded in context? (anti-hallucination)
+  answer_relevancy: Response addresses the question?
+  context_relevancy: Retrieved context is relevant to question?
+  context_recall: Retrieved context contains needed info?
+  context_precision: Retrieved context is precise (low noise)?
+
+EVALUATION LOOP:
+  Low faithfulness → response generation problem → improve prompting
+  Low answer_relevancy → response doesn't address query → improve prompt
+  Low context_relevancy → retrieval returning irrelevant docs → improve retrieval
+  Low context_recall → retrieval missing needed docs → increase k, improve embeddings
+  Low context_precision → too much noise in context → improve chunking, filtering
+
+
+================================================================================
+SECTION 5: EVALUATION PIPELINE ARCHITECTURE (Exam Obj 3.1)
+================================================================================
+
+A complete evaluation pipeline has these stages:
+
+  TEST SET → AGENT SYSTEM → GENERATE RESPONSES
+  → [RETRIEVAL METRICS + GENERATION METRICS + RAG METRICS + PERF METRICS]
+  → AGGREGATE → REPORT → ANALYSIS → OPTIMIZATION
+
+Key components:
+  EvaluationResult (dataclass): Stores per-question results
+    Fields: question, answer, contexts, ground_truth, metrics, latency_ms,
+    tokens_used, timestamp
+
+  evaluate_single: Measures one question. Records latency around agent.invoke().
+    Calculates all metric types.
+
+  evaluate_dataset: Loops over all questions, aggregates.
+    Error handling per question — one bad question shouldn't fail the whole run.
+
+  Aggregation: Per-metric: mean, min, max.
+    Latency: P50, P95, P99 (percentiles matter more than mean for SLAs)
+
+WHY PERCENTILES FOR LATENCY:
+  Mean latency hides tail latency.
+  If mean=500ms but P99=5000ms, 1% of users wait 10x longer.
+  SLAs are typically defined on P95 or P99, not mean.
+
+  P50 = median (typical user experience)
+  P95 = 95th percentile (worst 5% of requests)
+  P99 = 99th percentile (worst 1% of requests)
+
+
+================================================================================
+SECTION 6: A/B TESTING (Exam Obj 3.2)
+================================================================================
+
+---------------------------------------
+6.1 What to A/B Test
+---------------------------------------
+Any agent configuration change can be A/B tested:
+  - Different models (70B vs 8B)
+  - Different prompts (verbose vs concise)
+  - Different architectures (ReAct vs simple chain)
+  - Different retrieval strategies (semantic vs hybrid)
+  - Different chunk sizes (1000 vs 500 chars)
+
+---------------------------------------
+6.2 Statistical Significance — Critical Concept
+---------------------------------------
+A difference between A and B is only meaningful if it's statistically
+significant — i.e., not just random noise from a small sample.
+
+p-value < 0.05: Result is statistically significant (95% confidence).
+  This means there's only a 5% chance the difference is due to random chance.
+
+p-value >= 0.05: Result is NOT statistically significant.
+  The difference might be noise. Don't declare a winner.
+
+Minimum sample size: 30+ per variant for statistical significance.
+  For proportions (e.g., accuracy), you typically need 100+ per variant
+  to detect meaningful differences.
+
+T-test: Used for continuous metrics (latency, tokens).
+  Tests whether the means of two groups are different.
+
+Z-test for proportions: Used for binary metrics (accuracy, success rate).
+  Tests whether two proportions (rates) are different.
+
+---------------------------------------
+6.3 The A/B Testing Process
+---------------------------------------
+
+1. HYPOTHESIS: "Variant B (new prompt) will have higher accuracy than A"
+2. RANDOMIZE: Route 50% of requests to A, 50% to B
+3. COLLECT: Gather 100+ samples per variant with ground truth
+4. CALCULATE: Average metrics for each variant
+5. TEST: Run t-test or z-test on the difference
+6. DECIDE:
+   - If p < 0.05 AND B is better → Variant B wins
+   - If p < 0.05 AND A is better → Keep A
+   - If p >= 0.05 → No significant difference, need more data
+
+MULTI-METRIC A/B TESTING:
+  One variant might win on accuracy but lose on latency.
+  Define PRIMARY metric (e.g., accuracy) and GUARDRAILS (e.g., latency ≤ 2s).
+  Winner = best primary metric subject to all guardrails being met.
+
+EXAM SCENARIO: "Variant A: 85% accuracy, 1.5s. Variant B: 87% accuracy, 2.5s."
+  If SLA = 2s → A wins (B violates SLA even though accuracy is better).
+  If no SLA → B wins (higher accuracy, statistically significant).
+
+
+================================================================================
+SECTION 7: PARAMETER TUNING (Exam Obj 3.4)
+================================================================================
+
+---------------------------------------
+7.1 LLM Parameters
+---------------------------------------
+
+TEMPERATURE (0.0-2.0):
+  High: Creative, varied, diverse outputs. Risk: inconsistency, hallucination.
+  Low: Deterministic, consistent, focused. Best for: classification, routing.
+  Production default: 0.7 for conversational, 0.2 for factual/classification.
+
+TOP-P (0.0-1.0) Nucleus Sampling:
+  Controls probability mass cutoff. top_p=0.9 = use tokens covering 90% of proba.
+  Lower = more focused. Higher = more diverse.
+  Alternative to temperature, not usually both set simultaneously.
+
+MAX_TOKENS (1-4096+):
+  Hard cap on output length. Lower = faster + cheaper.
+  Set based on actual task requirements, not maximums.
+  256 for short answers, 512 for detailed explanations, 1024+ for reports.
+
+FREQUENCY_PENALTY (-2.0 to 2.0):
+  Positive value: Penalize tokens that already appeared → reduces repetition.
+  Good for: Long-form content generation, summaries.
+
+PRESENCE_PENALTY (-2.0 to 2.0):
+  Positive value: Penalize any topic already in context → encourages topic diversity.
+  Good for: Brainstorming, creative tasks.
+
+---------------------------------------
+7.2 Retrieval Parameters
+---------------------------------------
+
+TOP-K (1-20): How many documents to retrieve.
+  More K = higher recall, more context, more noise, higher cost.
+  Less K = higher precision, less noise, might miss key info.
+  Typical: K=3-5 for focused answers, K=10+ for comprehensive answers.
+
+SIMILARITY THRESHOLD (0.0-1.0): Minimum similarity score to include a result.
+  Higher threshold = fewer but more relevant results (precision++)
+  Lower threshold = more results, more coverage (recall++)
+  
+CHUNK SIZE (100-2000 chars): Size of document chunks for indexing.
+  Smaller chunks: More precise retrieval, less context per chunk.
+  Larger chunks: More context per chunk, less precise retrieval.
+  See Module 4 notes for detail.
+
+CHUNK OVERLAP (0-500 chars): Token overlap between adjacent chunks.
+  More overlap: Better boundary handling, more storage/compute.
+
+---------------------------------------
+7.3 Grid Search for Optimization
+---------------------------------------
+Grid search = test all combinations of parameter values.
+
+Example parameter grid:
+  temperature: [0.0, 0.3, 0.7, 1.0]
+  top_k: [3, 5, 10]
+  max_tokens: [256, 512, 1024]
+  Total combinations: 4 × 3 × 3 = 36 configurations
+
+For each combination:
+  1. Create agent with those params
+  2. Run evaluation on test set
+  3. Record all metrics
+  4. Find best combination subject to constraints
+
+PARETO FRONTIER:
+  Set of configurations where you can't improve one metric without
+  degrading another. Example: configuration X has best accuracy but
+  worst latency. Configuration Y has best latency but worst accuracy.
+  Both are on the Pareto frontier.
+  The "right" configuration depends on your specific requirements.
+
+CONSTRAINED OPTIMIZATION:
+  Find BEST accuracy where latency ≤ 2000ms AND cost ≤ $0.01/query.
+  This is the production-realistic approach — always have constraints.
+
+---------------------------------------
+7.4 Trade-Off Analysis — Exam Favorite
+---------------------------------------
+Three-way trade-off: Accuracy ↔ Latency ↔ Cost
+
+  70B model: Best accuracy, worst latency, highest cost.
+  8B model: Worst accuracy, best latency, lowest cost.
+  Hybrid routing: 80% queries to 8B (fast/cheap), 20% to 70B (accurate).
+  Result: Near 70B accuracy, near 8B average latency and cost.
+
+COST EFFICIENCY:
+  Cost per correct answer = Cost per query / Accuracy rate
+  A 10% more accurate model that costs 5x more is LESS cost-efficient
+  if your use case values throughput over marginal accuracy gains.
+
+
+================================================================================
+SECTION 8: USER FEEDBACK COLLECTION (Exam Obj 3.3)
+================================================================================
+
+Four feedback types:
+
+BINARY (Thumbs Up/Down):
+  Easiest to collect. Low friction.
+  Satisfaction Rate = Thumbs Up / (Thumbs Up + Thumbs Down)
+
+RATING (1-5 Stars):
+  More nuanced than binary. Shows degree of satisfaction.
+  Average Rating target: >4.0/5.0
+
+CATEGORICAL (Issue Classification):
+  User selects why the response was bad:
+    INCORRECT: Wrong information
+    INCOMPLETE: Right direction but missing key info
+    IRRELEVANT: Didn't address the question
+    UNSAFE: Harmful or inappropriate content
+    SLOW: Response too slow (latency complaint)
+    OTHER
+  This tells you WHERE to focus improvement efforts.
+
+FREE-TEXT (Comments):
+  Most informative but unstructured.
+  Requires NLP/LLM processing to extract patterns at scale.
+
+INTEGRATING FEEDBACK INTO EVALUATION:
+  Combined score = (automated_weight × automated_score) +
+                   (feedback_weight × satisfaction_rate)
+  Typical weights: 40% automated, 60% user feedback.
+  Rationale: Users are the ultimate judge of quality.
+
+FEEDBACK-DRIVEN IMPROVEMENT CYCLE:
+  1. Collect negative feedback examples
+  2. Identify common issue categories
+  3. Group by issue type (incorrect, irrelevant, etc.)
+  4. Fix root cause for each category
+  5. Validate fix reduces that feedback category
+  6. Re-evaluate across full test set
+
+
+================================================================================
+SECTION 9: NVIDIA AGENT INTELLIGENCE TOOLKIT (Exam Obj 3.5)
+================================================================================
+
+This is an NVIDIA-specific tool for evaluation. Know its four components.
+
+AgentEvaluator:
+  Comprehensive evaluation with RAGAS metrics + performance.
+  Takes agent, LLM (for LLM-as-judge), embedding model.
+  Outputs: faithfulness, answer_relevancy, context_precision/recall,
+    latency, cost.
+
+BenchmarkSuite:
+  Run standard NLP benchmarks: SQuAD (Q&A), CNN/DailyMail (summarization),
+    GSM8K (math reasoning).
+  Returns score + percentile ranking vs. other models/agents.
+
+PerformanceProfiler:
+  Breaks down WHERE time is spent in agent execution:
+    LLM Inference: % of time in model forward pass
+    Tool Execution: % of time waiting for external APIs
+    Retrieval: % of time in vector search
+    Overhead: % of time in Python/orchestration logic
+  This tells you WHERE to optimize. If LLM_time_pct=80% → optimize inference.
+  If tool_time_pct=60% → optimize external APIs.
+
+OptimizationRecommender:
+  Takes eval results + perf profile + constraints.
+  Outputs: ranked recommendations by impact and effort.
+  Each recommendation has: category, title, expected improvement,
+    implementation effort (low/medium/high).
+
+LLM-as-Judge:
+  Uses a second LLM to evaluate the first LLM's responses.
+  Criteria: correctness, completeness, clarity, relevance, safety.
+  Returns per-criterion scores (1-10) + overall score + reasoning.
+  When to use: When you need nuanced quality assessment that automated
+    metrics can't capture. More expensive but higher quality signal.
+
+
+================================================================================
+SECTION 10: EVALUATION METRIC DECISION TREE
+================================================================================
+
+What are you evaluating?
+
+RETRIEVAL QUALITY:
+  "Did the search find the right docs?"
+  → Precision@K (quality), Recall@K (completeness), MRR (speed), NDCG (ranking)
+
+GENERATION QUALITY:
+  "Is the text good?"
+  Exact wording matters → BLEU
+  Recall of key points matters → ROUGE
+  Semantic meaning matters → BERTScore
+
+RAG SYSTEM:
+  "Is the whole pipeline working?"
+  Agent making up facts → Faithfulness
+  Answer doesn't address question → Answer Relevance
+  Retrieval finding wrong docs → Context Relevance
+  Retrieval missing needed docs → Context Recall
+  Retrieval too noisy → Context Precision
+
+OVERALL AGENT:
+  "Is the agent doing its job?"
+  → Task Success Rate, User Satisfaction, Escalation Rate
+
+PRODUCTION MONITORING:
+  → Latency (P50/P95/P99), Error Rate, Cost/Request
+
+
+================================================================================
+SECTION 11: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: RAG agent sometimes provides correct facts BUT ALSO includes hallucinated
+   details not in the retrieved documents. Which metric to prioritize?
+A: FAITHFULNESS. This measures whether each claim in the response is
+   supported by retrieved context. Hallucinated details = faithfulness failures.
+   BLEU/ROUGE won't catch this (they compare to ground truth, not context).
+
+SCENARIO 2:
+Q: Variant A: 85% accuracy, 1.5s latency. Variant B: 87% accuracy, 2.5s.
+   SLA requires <2s. Which to choose?
+A: Variant A. Variant B violates the latency SLA. Accuracy gain (2%) doesn't
+   justify SLA breach. Always evaluate against ALL constraints, not just accuracy.
+
+SCENARIO 3:
+Q: Your retrieval system returns 10 documents but only 2 are useful.
+   The answer IS in those 2. What's the problem and metric?
+A: Low Context Precision (too much noise returned). The right info is there
+   (context recall is fine) but it's diluted with 8 irrelevant documents.
+   Fix: Improve chunking, add similarity threshold filter, reduce K.
+
+SCENARIO 4:
+Q: Agent answers a question about "side effects of drug X" but responds
+   with general information about drug X without listing side effects.
+   Which metric is low?
+A: Answer Relevance is low. The response is topically related but doesn't
+   address the specific question asked. Faithfulness may be fine
+   (response grounded in sources), but relevance is the issue.
+
+SCENARIO 5:
+Q: You need statistically significant comparison between two prompt strategies.
+   After 20 samples per variant, p-value = 0.12. What do you do?
+A: Collect more data. p-value > 0.05 means not statistically significant.
+   20 samples is too small. Need 30+ per variant minimum (often 100+).
+   Don't declare a winner based on non-significant results.
+
+SCENARIO 6:
+Q: Agent is verbose, slow, and expensive. Which parameters to adjust?
+A: Decrease max_tokens (less output = faster + cheaper).
+   Decrease temperature (0.2-0.3 = more focused, less rambling).
+   Optionally: route to smaller model (8B vs 70B).
+
+SCENARIO 7:
+Q: PerformanceProfiler shows: LLM=20%, Tool_execution=70%, Retrieval=5%.
+   Where should you focus optimization?
+A: Tool execution is the bottleneck (70% of time). Optimize API calls:
+   parallelize independent tool calls, add caching, improve retry logic.
+   Optimizing LLM inference (20%) gives minimal overall improvement.
+
+SCENARIO 8:
+Q: How do you combine automated evaluation metrics with user satisfaction?
+A: Weighted combination: Combined = (0.4 × automated) + (0.6 × satisfaction).
+   User satisfaction weighted higher because users are the ultimate judge.
+   Use automated for continuous monitoring (cheap), human for quality gates.
+
+
+================================================================================
+SECTION 12: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name all 8 evaluation dimensions?
+□ Do I know the formulas for Precision@K, Recall@K, MRR, F1?
+□ Can I calculate P@3: 3 retrieved, 2 relevant → 2/3 = 0.67?
+□ Do I know when to use BLEU vs ROUGE vs BERTScore?
+□ Can I name all 5 RAGAS metrics and what each measures?
+□ Can I explain why faithfulness is the anti-hallucination metric?
+□ Do I know what p-value < 0.05 means for A/B test results?
+□ Do I know minimum sample size for A/B testing (30+)?
+□ Can I explain the Pareto frontier concept?
+□ Do I know what constrained optimization means in practice?
+□ Can I describe the 4 user feedback types (binary/rating/categorical/free-text)?
+□ Do I know all 4 NVIDIA Agent Intelligence Toolkit components?
+□ Can I explain when to use LLM-as-Judge vs automated metrics?
+□ Do I know what P95 latency means and why it's used for SLAs?
+□ Do I know which parameters to change to reduce verbosity/latency/cost?
+□ Can I solve all 8 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 13% of total score
+Focus: Metric selection (retrieval vs generation vs RAG-specific),
+  faithfulness for hallucination detection, A/B testing with statistical
+  significance, parameter tuning trade-offs, NVIDIA evaluation toolkit.
+Faithfulness + A/B testing statistical significance = top exam topics here.
+================================================================================

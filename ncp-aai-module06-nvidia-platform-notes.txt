@@ -1,0 +1,435 @@
+NCP-AAI EXAM — MODULE 6: NVIDIA PLATFORM IMPLEMENTATION
+Deep Study Notes | Exam Weight: 7% | Study Time: 5-6 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Module 6 is the NVIDIA-specific tooling module. Everything else in the exam
+is vendor-neutral — architectures, patterns, metrics. Module 6 is specifically
+about NVIDIA's production stack. The exam tests whether you know which NVIDIA
+tool solves which problem.
+
+The five NVIDIA tools and their domains:
+  NIM:           Production-grade inference deployment (container-based)
+  Guardrails:    Safety, compliance, content filtering
+  TensorRT-LLM:  Inference optimization (speed + efficiency on GPU)
+  Triton:        Multi-model serving, production-scale deployment
+  NeMo Toolkit:  Agent building, evaluation, optimization
+
+Memory hook: "Nice Giants Train To Nurture" → NIM, Guardrails, TensorRT, Triton, NeMo
+
+
+================================================================================
+SECTION 1: NVIDIA NIM (Exam Obj 6.2)
+================================================================================
+
+---------------------------------------
+1.1 What NIM Is
+---------------------------------------
+NIM = NVIDIA Inference Microservices.
+Pre-packaged, GPU-optimized, containerized LLM inference services.
+Think: "plug-and-play production LLM deployment with GPU optimization baked in."
+
+Container registry: nvcr.io/nim/[model-name]:[version]
+  Example: nvcr.io/nim/meta/llama-3.1-70b-instruct:latest
+
+Auth: Requires NGC_API_KEY environment variable (NVIDIA GPU Cloud key).
+
+Exposed API: OpenAI-compatible REST API at port 8000.
+  /v1/chat/completions — main endpoint
+  /v1/health — health check
+  /v1/models — list available models
+
+---------------------------------------
+1.2 NIM Deployment
+---------------------------------------
+Basic deployment:
+  docker run -d \
+    --gpus all \
+    --name llama-nim \
+    -p 8000:8000 \
+    -e NGC_API_KEY=$NGC_API_KEY \
+    nvcr.io/nim/meta/llama-3.1-70b-instruct:latest
+
+Multi-GPU deployment:
+  --gpus all  → all available GPUs
+  Config: tensor_parallel_size=4 for 4-way model parallelism
+
+Health check:
+  curl http://localhost:8000/v1/health
+
+LangChain integration:
+  ChatNVIDIA(base_url="http://localhost:8000/v1", model="meta/llama-3.1-70b-instruct")
+
+---------------------------------------
+1.3 NIM Configuration Parameters
+---------------------------------------
+max_batch_size: Max requests processed together (e.g., 128)
+max_sequence_length: Max tokens in input+output (e.g., 4096)
+tensor_parallel_size: Number of GPUs for model parallelism (e.g., 4)
+pipeline_parallel_size: Pipeline stage count (typically 1)
+max_num_seqs: Max concurrent sequences in flight (e.g., 256)
+enable_chunked_prefill: True → process long prompts in chunks
+enable_prefix_caching: True → cache common prompt prefixes (KV cache reuse)
+gpu_memory_utilization: Fraction of GPU memory to use (e.g., 0.9 = 90%)
+
+---------------------------------------
+1.4 NIM Benefits Summary
+---------------------------------------
+vs. Raw model deployment:
+  - TensorRT-LLM optimization built in (2-8x faster)
+  - Automatic request batching (higher throughput)
+  - KV cache management
+  - Multi-GPU tensor parallelism
+  - Health checks + monitoring endpoints
+  - OpenAI-compatible API (drop-in replacement)
+  - No manual optimization required
+
+
+================================================================================
+SECTION 2: NVIDIA NEMO GUARDRAILS (Exam Obj 6.1)
+================================================================================
+
+---------------------------------------
+2.1 What Guardrails Do
+---------------------------------------
+Guardrails = programmable safety and compliance controls that wrap any LLM.
+They intercept requests BEFORE they reach the LLM (input rails) and
+intercept responses BEFORE they reach the user (output rails).
+
+Key use cases:
+  - Block illegal/harmful requests
+  - Prevent jailbreak attempts
+  - Filter PII from inputs/outputs
+  - Restrict topics to defined domain
+  - Fact-check responses against context
+  - Block sensitive information leakage
+
+---------------------------------------
+2.2 Configuration Architecture
+---------------------------------------
+Two-file structure:
+  config.yml: Model definition + rail declarations
+  guardrails.co: Colang language defining conversation flows and rules
+
+config.yml structure:
+  models section: Which LLM to use
+  rails.input.flows: List of input check flows
+  rails.output.flows: List of output check flows
+  rails.retrieval.flows: Checks on retrieved context
+
+guardrails.co (Colang) structure:
+  define user [intent description]: Example phrases for this intent
+  define bot [response]: What bot should say in response
+  define flow: If user [intent] → bot [response] → stop
+
+---------------------------------------
+2.3 Built-in vs Custom Guardrails
+---------------------------------------
+BUILT-IN: check toxic language, check jailbreak attempts, check hallucination,
+  check sensitive information, check source reliability
+
+CUSTOM: @action decorator on a Python function.
+  Function receives context dict, returns {allowed: bool, reason: str}
+  Register with: config.actions.register_action(my_function)
+
+CUSTOM GUARDRAIL EXAMPLES:
+  check_pii: Regex patterns for email, phone, SSN
+  check_competitor_mentions: Block mentioning competitor names
+  check_financial_advice: Flag if agent gives specific investment advice
+  check_confidence: Block if model confidence is too low
+
+---------------------------------------
+2.4 Guardrails in Agent Context
+---------------------------------------
+Wrap any LLMRails around your existing agent:
+  config = RailsConfig.from_path("./config")
+  rails = LLMRails(config)
+  response = rails.generate(messages=[{"role": "user", "content": query}])
+
+LLMRails handles: input check → (if passed) LLM call → output check → user
+If any rail fires: return predefined refusal message, never reaches LLM.
+
+EXAM: "Agent must block harmful requests" → NeMo Guardrails, not TensorRT or NIM.
+
+
+================================================================================
+SECTION 3: TENSORRT-LLM (Exam Obj 6.4)
+================================================================================
+
+---------------------------------------
+3.1 What TensorRT-LLM Does
+---------------------------------------
+TensorRT-LLM = NVIDIA's LLM inference optimization engine.
+Takes a pretrained model → applies multiple GPU-level optimizations →
+produces a faster, more efficient TensorRT "engine" (compiled model).
+
+NOT a deployment tool (that's NIM/Triton).
+IS an optimization tool that makes inference faster.
+
+---------------------------------------
+3.2 Key Optimizations
+---------------------------------------
+
+KERNEL FUSION:
+  Combines multiple sequential GPU operations into one kernel.
+  Reduces memory bandwidth usage, GPU kernel launch overhead.
+  Example: Combine LayerNorm + Attention + FFN into fused kernels.
+
+QUANTIZATION (most exam-relevant):
+  Reduce numerical precision of model weights.
+  FP32 → FP16: 2x memory reduction, negligible accuracy loss.
+    (FP32 is the default training precision, not typically used for inference)
+  FP16 → INT8: 2x further memory reduction, ~1-3% accuracy drop.
+    Good for most production use cases.
+  FP16 → FP8: 2x memory reduction, NVIDIA H100 hardware required.
+    Near-INT8 accuracy with better throughput.
+  FP16 → INT4: 4x memory reduction, noticeable accuracy drop.
+    Only for memory-constrained edge cases.
+
+  Memory savings matter because: larger batch sizes fit in GPU memory
+  when model weights are smaller → higher throughput.
+
+IN-FLIGHT BATCHING:
+  Process multiple requests concurrently DURING token generation.
+  Traditional: Finish request A before starting request B.
+  In-flight: Interleave tokens from A, B, C simultaneously.
+  Result: ~4x throughput improvement on GPU utilization.
+
+PAGED KV CACHE (PagedAttention):
+  Efficiently manage attention KV cache across requests.
+  Prevents memory fragmentation, allows larger batch sizes.
+  Inspired by OS virtual memory paging.
+
+---------------------------------------
+3.3 Performance Numbers (Memorize)
+---------------------------------------
+PyTorch FP16:        45ms latency,  2,200 tok/s,  140GB VRAM
+TensorRT-LLM FP16:  18ms latency,  5,500 tok/s,  140GB VRAM  (2.5x faster)
+TensorRT-LLM INT8:  12ms latency,  8,300 tok/s,   70GB VRAM  (3.75x faster)
+TensorRT-LLM FP8:   10ms latency, 10,000 tok/s,   70GB VRAM  (4.5x faster)
+
+Key exam insight: INT8 halves memory AND increases throughput.
+  Not just faster — it also enables larger batch sizes on same hardware.
+
+---------------------------------------
+3.4 Build Process
+---------------------------------------
+Two-step process:
+  Step 1: Convert checkpoint to TensorRT-LLM format
+    python convert_checkpoint.py --model_dir ./model --dtype float16 --tp_size 4
+
+  Step 2: Build TensorRT engine
+    trtllm-build --checkpoint_dir ./trt_model --output_dir ./engine \
+      --gemm_plugin float16 --max_batch_size 128
+
+Note: NIM handles this automatically. Only need manual TensorRT-LLM build
+  if deploying outside NIM (e.g., custom Triton setup).
+
+EXAM: "Reduce inference latency by 2-4x" → TensorRT-LLM
+  "Need safety controls" → NeMo Guardrails
+  "Production containerized deployment" → NIM
+  "Multi-model serving at scale" → Triton
+
+
+================================================================================
+SECTION 4: TRITON INFERENCE SERVER (Exam Obj 6.4)
+================================================================================
+
+---------------------------------------
+4.1 What Triton Does
+---------------------------------------
+Triton = NVIDIA's production model serving framework.
+vs. NIM: NIM is for single LLM deployment (simpler, easier).
+  Triton is for complex multi-model deployments (more powerful, more complex).
+
+Triton capabilities beyond NIM:
+  Multi-model serving: Host dozens of different models simultaneously
+  Model ensembles: Chain models into pipelines (e.g., ASR → LLM → TTS)
+  Dynamic batching: Configurable batching with queue delay tuning
+  Multiple backends: TensorRT, PyTorch, ONNX, Python (not just LLMs)
+  gRPC API: Lower-latency alternative to HTTP
+  Metrics: Prometheus-compatible metrics endpoint (port 8002)
+
+---------------------------------------
+4.2 Model Repository Structure
+---------------------------------------
+model_repository/
+├── model_name/
+│   ├── config.pbtxt      ← Model configuration
+│   └── 1/                ← Version 1
+│       └── model.plan    ← TensorRT engine file
+
+config.pbtxt fields:
+  name: Model name
+  platform: Backend type (tensorrt_llm, pytorch_libtorch, etc.)
+  max_batch_size: Max requests per batch
+  input/output: Define tensor names, data types, shapes
+  dynamic_batching.max_queue_delay_microseconds: Batching latency budget
+
+---------------------------------------
+4.3 Deployment
+---------------------------------------
+docker run --gpus all \
+  -p 8000:8000 \   # HTTP API
+  -p 8001:8001 \   # gRPC API
+  -p 8002:8002 \   # Metrics
+  -v $(pwd)/model_repository:/models \
+  nvcr.io/nvidia/tritonserver:24.01-trtllm-python-py3 \
+  tritonserver --model-repository=/models
+
+Client: tritonclient.http or tritonclient.grpc libraries.
+
+---------------------------------------
+4.4 When to Use NIM vs Triton
+---------------------------------------
+NIM:
+  Single LLM, simple deployment, minimal ops overhead.
+  Docker run + API key = done.
+  Best for: Most enterprise agents, development, proof-of-concept.
+
+Triton:
+  Multi-model serving, complex pipelines, fine-grained control.
+  More configuration but more powerful.
+  Best for: Production serving platforms, multi-model products, ML platforms.
+
+EXAM: "Simplest way to deploy LLM" → NIM.
+  "Need to serve 10 different models simultaneously" → Triton.
+  "Need model ensemble pipeline" → Triton.
+
+
+================================================================================
+SECTION 5: NVIDIA NEMO AGENT TOOLKIT (Exam Obj 6.3)
+================================================================================
+
+Three components:
+  AgentBuilder: Create agents from templates with model + tools + memory config.
+  AgentEvaluator: Evaluate against test dataset with accuracy/latency/cost metrics.
+  AgentOptimizer: Auto-optimize to meet target constraints (latency_ms, min_accuracy).
+
+Pattern:
+  builder = AgentBuilder(model=..., tools=[...], memory_type=...)
+  agent = builder.build()
+  evaluator = AgentEvaluator(agent=agent, metrics=[...])
+  results = evaluator.evaluate(test_dataset)
+  optimizer = AgentOptimizer(agent)
+  optimized = optimizer.optimize(target_latency_ms=1000, min_accuracy=0.85)
+
+The toolkit abstracts away: model selection, prompt templates, tool integration,
+  memory configuration, evaluation, and optimization into a unified API.
+
+
+================================================================================
+SECTION 6: MULTIMODAL PIPELINES (Exam Obj 6.5)
+================================================================================
+
+VISION (VLMs):
+  Model: microsoft/phi-3-vision-128k-instruct (or other NVIDIA-hosted VLMs)
+  Input format: Base64-encoded image + text prompt in multimodal message
+  LangChain: ChatNVIDIA(model="microsoft/phi-3-vision-128k-instruct")
+  Message structure:
+    {"role": "user", "content": [
+      {"type": "text", "text": "What's in this image?"},
+      {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+    ]}
+
+AUDIO (ASR):
+  Model: nvidia/parakeet-tdt-1.1b (NVIDIA's ASR model)
+  Toolkit: nvidia_audio_toolkit.AudioProcessor
+  Output: Transcribed text → passed as input to text agent
+
+MULTIMODAL PIPELINE PATTERN:
+  Audio/Image input → Appropriate NVIDIA model → Text output → Text LLM → Response
+  Each modality has its own NVIDIA NIM-hosted model.
+  LangChain multimodal tools can wrap these as agent tools.
+
+
+================================================================================
+SECTION 7: NVIDIA TOOL SELECTION MATRIX
+================================================================================
+
+PROBLEM → NVIDIA TOOL:
+  "Need faster LLM inference" → TensorRT-LLM (2-4x speedup)
+  "Need to deploy LLM to production" → NIM (containerized)
+  "Need safety/compliance controls" → NeMo Guardrails
+  "Need to serve multiple models" → Triton Inference Server
+  "Need agent evaluation pipeline" → NeMo Agent Toolkit
+  "Need vision capability" → phi-3-vision NIM
+  "Need audio transcription" → Parakeet NIM
+  "Need to reduce GPU memory usage" → TensorRT-LLM INT8 quantization
+  "Need jailbreak prevention" → NeMo Guardrails input rails
+  "Need to block PII" → NeMo Guardrails custom @action
+  "Need dynamic batching at scale" → Triton with dynamic_batching config
+  "Need OpenAI-compatible API locally" → NIM (drops in as OpenAI replacement)
+
+
+================================================================================
+SECTION 8: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: You need to reduce LLM inference latency by 50%. Which NVIDIA tool?
+A: TensorRT-LLM. It provides 2-4x speedup through kernel fusion, quantization,
+   and in-flight batching. 50% reduction = 2x speedup, well within TRT-LLM range.
+   NIM uses TRT-LLM internally, so NIM is also valid — but TRT-LLM is the
+   specific optimization tool if TRT-LLM and NIM are separate options.
+
+SCENARIO 2:
+Q: Agent must block users from asking for illegal activity instructions. Which tool?
+A: NeMo Guardrails with input rails. Define flow in Colang: if user asks about
+   illegal activity → bot refuses → stop. This intercepts BEFORE LLM call.
+
+SCENARIO 3:
+Q: Need to deploy LLM with minimal configuration, enterprise-grade reliability.
+A: NIM. Docker pull + NGC API key + docker run = production-ready LLM endpoint.
+   Handles optimization, batching, health checks automatically.
+
+SCENARIO 4:
+Q: Production platform needs to serve 15 different models (LLMs, embedding
+   models, classification models) under one service. Which tool?
+A: Triton Inference Server. Multi-model repository, each with own config.pbtxt.
+   NIM is single-LLM focused.
+
+SCENARIO 5:
+Q: 70B model doesn't fit on available A100 GPUs (80GB each, 2 available).
+   How to make it fit?
+A: Two approaches — can use both:
+   1. Tensor parallelism (NIM tensor_parallel_size=2): Split model across 2 GPUs.
+   2. INT8 quantization (TensorRT-LLM): Halve model memory (140GB → 70GB).
+   With INT8, model fits on single A100. With tensor_parallel, split across 2.
+
+SCENARIO 6:
+Q: Agent responses are great but need automated safety checks before returning
+   to user. Specific check: responses must not contain financial advice.
+A: NeMo Guardrails output rail with custom @action.
+   check_financial_advice action: Detect financial advice patterns in response.
+   If detected → replace with disclaimer or redirect to human advisor.
+
+
+================================================================================
+SECTION 9: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name all 5 NVIDIA tools and their primary function?
+□ Do I know the NIM docker run command structure?
+□ Can I describe NIM configuration parameters (tensor_parallel, batch_size)?
+□ Do I know Guardrails config.yml vs guardrails.co structure?
+□ Can I explain input rails vs output rails?
+□ Do I know how to write a custom @action guardrail?
+□ Can I name 4 TensorRT-LLM optimizations?
+□ Do I know the performance numbers (latency/throughput FP16 vs INT8)?
+□ Can I explain what quantization does to memory and performance?
+□ Do I know Triton vs NIM distinction (multi-model vs single)?
+□ Do I know Triton's three ports (8000 HTTP, 8001 gRPC, 8002 metrics)?
+□ Can I name NeMo Agent Toolkit's 3 components?
+□ Do I know the multimodal model for vision (phi-3-vision)?
+□ Can I solve all 6 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 7% of total score (lower weight, focused topics)
+Focus: NIM deployment, Guardrails for safety, TensorRT-LLM for performance,
+  Triton for multi-model serving. Know which tool solves which problem.
+The tool selection matrix is the most exam-practical section here.
+================================================================================

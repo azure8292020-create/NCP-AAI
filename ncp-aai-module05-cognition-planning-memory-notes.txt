@@ -1,0 +1,429 @@
+NCP-AAI EXAM — MODULE 5: COGNITION, PLANNING, AND MEMORY
+Deep Study Notes | Exam Weight: 10% | Study Time: 6-8 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+This module goes deeper on three capabilities that define sophisticated agents:
+  1. MEMORY — how agents retain and access information over time
+  2. REASONING — how agents think through complex problems step by step
+  3. PLANNING — how agents decompose and sequence multi-step tasks
+
+These are the "cognitive architecture" topics. Module 1 covered memory briefly
+in the architecture context. Module 5 goes implementation-deep on each one.
+
+Key tension: Sophistication vs. Speed.
+  - Better reasoning (CoT, self-consistency) = more tokens = more latency
+  - Better memory (long-term vector stores) = more retrieval overhead
+  - Better planning (ReWOO, hierarchical) = more upfront LLM calls
+  Exam scenarios test knowing when sophistication is worth the cost.
+
+
+================================================================================
+SECTION 1: MEMORY MECHANISMS — DEEP DIVE (Exam Obj 5.1)
+================================================================================
+
+Four memory types — same as Module 1 but with implementation details:
+
+---------------------------------------
+1.1 ConversationBufferMemory
+---------------------------------------
+What: Stores ALL messages in the conversation, no truncation.
+LangChain: ConversationBufferMemory(memory_key="chat_history",
+  return_messages=True)
+Use when: Short conversations, all context matters.
+Problem: Grows unboundedly. Context window overflow in long conversations.
+
+---------------------------------------
+1.2 ConversationBufferWindowMemory
+---------------------------------------
+What: Keeps only the LAST K message exchanges.
+LangChain: ConversationBufferWindowMemory(k=5, memory_key="chat_history")
+Use when: Medium-length conversations, recent context is sufficient.
+K selection: k=5 for most agents, k=10-20 for code assistants.
+Problem: Hard drop of old messages. If critical context was in message 6
+  and k=5, it's gone.
+
+---------------------------------------
+1.3 ConversationSummaryMemory
+---------------------------------------
+What: Automatically summarizes conversation history using an LLM.
+LangChain: ConversationSummaryMemory(llm=llm, memory_key="chat_history")
+Use when: Long conversations where early context still matters.
+How: Each time summary exceeds a threshold, old messages are summarized
+  and replaced with a compact summary. Recent messages kept in full.
+Cost: Requires LLM call to generate summary → adds latency + cost.
+Best for: Extended support sessions, research assistants, personal assistants.
+
+---------------------------------------
+1.4 VectorStoreRetrieverMemory
+---------------------------------------
+What: Stores conversation turns as embeddings. Retrieves semantically
+  relevant memories at query time. PERSISTENT ACROSS SESSIONS.
+LangChain: VectorStoreRetrieverMemory(retriever=vectorstore.as_retriever(k=3))
+Use when: Cross-session personalization, remembering user preferences/facts.
+How: save_context() stores (input, output) pairs as embeddings.
+  load_memory_variables({"input": query}) retrieves semantically similar past turns.
+Storage: FAISS (dev), Milvus (prod), Chroma (small prod).
+Key: This is the ONLY memory type that persists across conversation sessions.
+
+MEMORY SELECTION DECISION TABLE:
+  "Short conversation, all context needed" → ConversationBufferMemory
+  "Medium conversation, recent context sufficient" → ConversationBufferWindowMemory
+  "Long conversation, early context must be preserved" → ConversationSummaryMemory
+  "Cross-session personalization, user preferences" → VectorStoreRetrieverMemory
+
+HYBRID APPROACH:
+  Short-term = WindowMemory (last 10 turns in full)
+  Long-term = VectorStoreRetrieverMemory (semantic retrieval of past sessions)
+  Both used simultaneously — agent has both recent context AND past history.
+
+---------------------------------------
+1.5 LangGraph Checkpointer for Stateful Persistence
+---------------------------------------
+SqliteSaver: Persists LangGraph state to SQLite DB.
+  Allows conversation RESUMPTION — stop a workflow, resume later with full state.
+  
+Config pattern:
+  config = {"configurable": {"thread_id": "user_123"}}
+  app.invoke(state, config)  → state automatically saved per thread_id
+
+This enables: Pause and resume of multi-step workflows.
+  User starts a complex task, closes browser, comes back later — agent picks
+  up exactly where it left off.
+
+
+================================================================================
+SECTION 2: CHAIN-OF-THOUGHT REASONING (Exam Obj 5.2)
+================================================================================
+
+---------------------------------------
+2.1 What CoT Is and Why It Works
+---------------------------------------
+CoT = prompt the model to show reasoning steps before final answer.
+Without CoT: "What is 15% of $250?" → "$37.50" (direct, might be wrong)
+With CoT: "Step 1: Convert 15% to decimal = 0.15. Step 2: Multiply 250 × 0.15.
+  Step 3: Result = 37.50. Answer: $37.50" → More reliable.
+
+Why it works: Intermediate steps serve as a "scratchpad" that allows the
+  model to handle more complex multi-step problems without losing track.
+  Compresses complex reasoning into token-by-token forward passes.
+
+CoT prompt structure:
+  "Solve this problem step by step:
+   Problem: {problem}
+   Step 1: Understand what is being asked → [analysis]
+   Step 2: Identify key information → [facts]
+   Step 3: Plan approach → [strategy]
+   Step 4: Execute → [work]
+   Step 5: Verify → [sanity check]
+   Final Answer:"
+
+---------------------------------------
+2.2 Self-Consistency — Reliability Enhancement
+---------------------------------------
+Problem: Even with CoT, a single reasoning path can be wrong.
+Solution: Generate N different reasoning paths, vote on the most common answer.
+
+Self-Consistency algorithm:
+  1. Run CoT prompt N times (e.g., 5 times) with temperature > 0
+  2. Each run produces a different reasoning path (due to sampling)
+  3. Extract the final answer from each run
+  4. Vote: return the most frequent answer
+  
+Why it works: Wrong answers tend to arise from different mistakes,
+  so they spread across many different wrong answers. The right answer
+  concentrates votes at one point.
+
+Cost: N times more expensive and slower than single CoT pass.
+When worth it: High-stakes decisions, math problems, complex reasoning
+  where accuracy is critical and cost is secondary.
+When NOT worth it: High-volume, low-stakes, latency-critical paths.
+
+---------------------------------------
+2.3 When to Use CoT (Same as Module 2 — Consolidated)
+---------------------------------------
+USE:
+  Multi-step math, logic puzzles, multi-hop reasoning
+  Complex classification with nuanced boundaries
+  Compliance/audit scenarios needing traceable reasoning
+  Any task where intermediate steps affect the answer
+
+DON'T USE:
+  Simple fact retrieval
+  High-volume, latency-critical paths
+  Tasks where direct answer is sufficient
+
+TEMPERATURE FOR COT:
+  Temperature 0.3 or lower for factual/reasoning tasks with CoT.
+  If using self-consistency: temperature 0.7 (need diversity across runs).
+
+
+================================================================================
+SECTION 3: TASK DECOMPOSITION AND PLANNING (Exam Obj 5.2, 5.3)
+================================================================================
+
+---------------------------------------
+3.1 Why Task Decomposition
+---------------------------------------
+Complex tasks exceed what a single LLM call can handle reliably.
+Solution: Break the task into sub-tasks, solve each individually, combine.
+
+Benefits:
+  - Each sub-task is simpler → fewer errors per step
+  - Sub-tasks can be parallelized (independent ones)
+  - Failures are isolated — one failed sub-task doesn't crash everything
+  - Results can be validated between steps
+
+---------------------------------------
+3.2 Hierarchical Task Planning with LangGraph
+---------------------------------------
+Pattern:
+  1. DECOMPOSE: LLM breaks main task into 3-5 ordered sub-tasks
+  2. EXECUTE: Loop — execute current sub-task → mark as completed
+  3. ROUTE: If more sub-tasks remain → execute. If done → END.
+
+LangGraph implementation:
+  State: {task, subtasks[], completed[], current_subtask, result}
+  Nodes: decompose_task, execute_subtask
+  Edges: decompose → execute (fixed)
+         execute → execute (conditional: more subtasks remaining)
+         execute → END (conditional: all complete)
+
+---------------------------------------
+3.3 ReWOO vs ReAct — Critical Comparison for Exam
+---------------------------------------
+
+ReAct (Reasoning + Acting):
+  How: Iterative. Reason → Act → Observe → Reason → Act → Observe...
+  Observation-dependent: Each reasoning step depends on previous observation.
+  Adaptive: Can change plan based on what tools return.
+  Cost: Multiple LLM calls interspersed with tool calls.
+  Latency: Higher (serial: think → act → wait for result → think again)
+  When to use: Dynamic tasks where each step depends on previous results.
+    Example: Research tasks where search results determine what to search next.
+
+ReWOO (Reasoning WithOut Observation):
+  How: Plan ALL steps upfront, then execute all tool calls, then synthesize.
+  Plan phase: LLM generates complete plan (#E1 = Tool[input], #E2 = ..., etc.)
+  Execute phase: ALL tool calls run in parallel (no interleaving with reasoning)
+  Synthesize phase: LLM uses all results to generate final answer.
+  Latency: Lower (parallel tool execution)
+  Adaptability: Lower (plan locked in before any results seen)
+  When to use: Tasks where you can plan upfront without needing to see
+    intermediate results. Example: "Find info about X, Y, and Z then summarize"
+    — searches can run in parallel since they're independent.
+
+KEY DIFFERENCE:
+  ReAct: Each tool call result INFLUENCES the next reasoning step.
+  ReWOO: All tool calls planned upfront and run in parallel.
+
+EXAM DECISION:
+  "Results of step 1 determine what to do in step 2" → ReAct
+  "All steps are independent, want low latency" → ReWOO
+  "Need flexibility and adaptability" → ReAct
+  "Need throughput and speed" → ReWOO
+
+
+================================================================================
+SECTION 4: STATEFUL ORCHESTRATION (Exam Obj 5.4)
+================================================================================
+
+---------------------------------------
+4.1 Why State Matters
+---------------------------------------
+Stateless agents: Every request is independent. No memory of what happened.
+Stateful agents: Maintain context across requests. Can resume workflows.
+
+Use cases requiring state:
+  - Multi-turn conversations (remember earlier parts of conversation)
+  - Long-running workflows (research task taking multiple sessions)
+  - Personalization (remember user preferences)
+  - Transaction workflows (multi-step process that must resume if interrupted)
+
+---------------------------------------
+4.2 LangGraph State Architecture
+---------------------------------------
+Core concept: State is a TypedDict shared across all nodes.
+  Every node function signature: (state: AgentState) → AgentState
+  Nodes READ from state, do work, WRITE back to state, return updated state.
+
+State fields design:
+  messages: Conversation history
+  user_info: User profile/preferences accumulated over time
+  context: Task-specific context (documents, search results, etc.)
+  next_action: Routing signal for conditional edges
+
+CHECKPOINTER for persistence:
+  SqliteSaver.from_conn_string(":memory:") → in-memory (testing)
+  SqliteSaver.from_conn_string("path/to/db.sqlite") → file (dev)
+  External DB checkpointer → production (Redis, Postgres)
+
+Thread ID pattern:
+  config = {"configurable": {"thread_id": "user_123"}}
+  Each user_id gets their own isolated state history.
+  Invoking same thread_id picks up where it left off.
+
+---------------------------------------
+4.3 State Checkpoint Patterns
+---------------------------------------
+HUMAN-IN-THE-LOOP with checkpoints:
+  Workflow runs → reaches decision point → SAVES STATE → pauses
+  Human reviews → approves or rejects → workflow RESUMES from saved state
+  This enables: Agent proposes, human reviews, agent executes.
+  Critical for: High-stakes domains (medical, legal, financial).
+
+RECOVERY pattern:
+  If workflow crashes mid-execution, restart from last checkpoint.
+  No need to redo completed work.
+  State checkpointing = fault tolerance.
+
+
+================================================================================
+SECTION 5: ADAPTIVE REASONING (Exam Obj 5.5)
+================================================================================
+
+---------------------------------------
+5.1 Learning from Feedback at Runtime
+---------------------------------------
+Adaptive agent pattern:
+  1. Execute task → observe success/failure
+  2. Record pattern: (query_type, strategy) → (success/failure)
+  3. Future queries: check success_patterns, select winning strategy
+  4. If strategy fails → record in failure_patterns, try fallback
+
+Success pattern storage:
+  Dict of {query_type: best_strategy}
+  Updated after each interaction.
+  In production: persist to database, not just in-memory.
+
+---------------------------------------
+5.2 Strategy Selection
+---------------------------------------
+Pattern matching: Classify incoming query → select matching strategy.
+  classification: Simple queries → fast model + direct prompt
+  reasoning: Complex queries → CoT + large model
+  creative: Open-ended queries → high temperature + large model
+
+Strategy adaptation signals:
+  HIGH error rate for a strategy → de-prioritize or retire that strategy
+  HIGH user rating for a strategy → increase its weighting
+  Slow response for a strategy → add to "expensive strategies" bucket
+
+---------------------------------------
+5.3 Meta-Reasoning
+---------------------------------------
+Agent reasons about WHICH reasoning strategy to use before reasoning.
+"Is this a math problem? → use CoT. Is this a factual lookup? → direct."
+
+Classifier layer before main reasoning:
+  Step 1: Classify query type (math, factual, creative, reasoning-intensive)
+  Step 2: Select reasoning strategy based on type
+  Step 3: Execute with selected strategy
+  Step 4: Record outcome for future strategy selection improvement
+
+
+================================================================================
+SECTION 6: THE FOUR REASONING FRAMEWORKS COMPARED
+================================================================================
+
+DIRECT PROMPTING:
+  What: Single LLM call, no intermediate reasoning.
+  Best for: Simple, well-defined queries with clear answers.
+  Latency: Lowest. Cost: Lowest. Accuracy: Baseline.
+
+CHAIN-OF-THOUGHT (CoT):
+  What: Prompt with step-by-step reasoning template.
+  Best for: Multi-step reasoning, math, complex classification.
+  Latency: Medium (more tokens in output). Cost: Medium. Accuracy: Better.
+
+ReAct:
+  What: Iterative think-act-observe loop with tools.
+  Best for: Tasks requiring real-world information gathering.
+  Latency: High (serial loop). Cost: High. Accuracy: Best for tool-using tasks.
+
+ReWOO:
+  What: Plan all tool calls upfront, execute in parallel, synthesize.
+  Best for: Independent tool calls where results don't inform each other.
+  Latency: Lower than ReAct (parallel tools). Cost: Medium. Accuracy: Good.
+
+FRAMEWORK SELECTION:
+  No tools needed + simple → Direct
+  No tools needed + complex reasoning → CoT
+  Tools needed + dependent steps → ReAct
+  Tools needed + independent steps → ReWOO
+
+
+================================================================================
+SECTION 7: HIGH-PROBABILITY EXAM SCENARIOS WITH REASONING
+================================================================================
+
+SCENARIO 1:
+Q: Agent needs to remember user preferences (prefers concise answers, works in
+   healthcare) across multiple sessions. Which memory?
+A: VectorStoreRetrieverMemory. It's the ONLY LangChain memory type that
+   persists across sessions. Stores user facts as embeddings, retrieves
+   semantically relevant ones at query time.
+
+SCENARIO 2:
+Q: Agent starts a complex research workflow. User closes browser mid-task.
+   Next day, user returns. How to resume without starting over?
+A: LangGraph with SqliteSaver checkpointer + thread_id.
+   Workflow state is saved at each step. Same thread_id resumes from last checkpoint.
+
+SCENARIO 3:
+Q: You need high accuracy on complex math reasoning problems.
+   Agent keeps making arithmetic errors. How to improve?
+A: Chain-of-Thought prompting with Step 1-5 structure.
+   For highest accuracy: self-consistency (5 runs, vote on most common answer).
+   Temperature: 0.3 for CoT, 0.7 for self-consistency variants.
+
+SCENARIO 4:
+Q: ReAct vs ReWOO — agent must find stock price of 5 companies and
+   compare them. Which framework?
+A: ReWOO. The 5 stock lookups are INDEPENDENT of each other.
+   Plan all 5 lookups upfront → execute in parallel → synthesize comparison.
+   ReAct would do them sequentially (slower, no benefit since they don't
+   depend on each other).
+
+SCENARIO 5:
+Q: Agent is researching a topic. Step 1: search initial term. Step 2:
+   based on search results, search for related sub-topics. Which framework?
+A: ReAct. Step 2 DEPENDS on Step 1's results. You can't plan Step 2
+   without seeing Step 1's output. ReAct's adaptive iteration is required.
+   ReWOO can't handle this because plan must be fixed upfront.
+
+SCENARIO 6:
+Q: Agent conversation gets very long (30+ messages). How to maintain context
+   without overflow but preserve early important info?
+A: ConversationSummaryMemory. Automatically compresses old messages into
+   a summary, keeps recent messages in full. Preserves early context
+   in compressed form. WindowMemory would hard-drop early messages.
+
+
+================================================================================
+SECTION 8: QUICK REVIEW CHECKLIST BEFORE EXAM
+================================================================================
+
+□ Can I name all 4 LangChain memory types and when to use each?
+□ Do I know which memory type persists across sessions? (VectorStore)
+□ Can I explain SqliteSaver checkpointer and thread_id pattern?
+□ Can I explain Chain-of-Thought and when to use it?
+□ Do I know what self-consistency adds and when it's worth it?
+□ Can I explain ReAct vs ReWOO with the key difference?
+□ Can I identify when to use ReAct vs ReWOO from a scenario?
+□ Can I describe hierarchical task decomposition in LangGraph?
+□ Can I explain the CLOSED/OPEN/HALF_OPEN state concept (circuit breaker)?
+   Wait, that's Module 2. Here: Can I explain DECOMPOSE → EXECUTE loop?
+□ Do I understand adaptive reasoning (success/failure pattern tracking)?
+□ Can I solve all 6 exam scenarios above without looking at notes?
+
+
+================================================================================
+EXAM WEIGHT REMINDER: 10% of total score
+Focus: Memory type selection (especially VectorStore for cross-session),
+  CoT + self-consistency for accuracy, ReAct vs ReWOO trade-off,
+  LangGraph state management and checkpointing.
+The ReAct vs ReWOO comparison is very likely in scenario questions.
+================================================================================

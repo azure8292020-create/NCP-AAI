@@ -1,0 +1,435 @@
+NCP-AAI EXAM — MODULE 7: RUN, MONITOR, AND MAINTAIN
+Deep Study Notes | Exam Weight: 7% | Study Time: 5-6 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Module 7 is the "how do you know it's working in production" module.
+Once an agent is deployed, you need:
+  1. METRICS — Numbers that tell you health and performance
+  2. LOGGING — Records of what happened and when
+  3. ANOMALY DETECTION — Automated alerting when something goes wrong
+  4. CONTINUOUS EVALUATION — Regular quality checks against test set
+  5. TROUBLESHOOTING — Systematic diagnosis of problems
+
+Classic DevOps + AI-specific twist: Latency, throughput, error rate (standard ops)
+plus accuracy, faithfulness, user satisfaction (AI-specific). Both matter.
+
+
+================================================================================
+SECTION 1: MONITORING METRICS (Exam Obj 7.1)
+================================================================================
+
+Four metric categories — know all four:
+
+PERFORMANCE:
+  Latency (P50, P95, P99) — Target: P95 < 2s
+  Throughput (requests/second) — track trends, not just point-in-time
+  TTFT (Time to First Token) — streaming response start time
+
+QUALITY:
+  Accuracy / Task Success Rate — Target: > 85%
+  Faithfulness score — tracking hallucination rate over time
+  User Satisfaction — average rating, thumbs up/down ratio
+
+RELIABILITY:
+  Uptime percentage — Target: 99.9% (three nines)
+  Error Rate — Target: < 1% (or < 5% in dev)
+  Success Rate = 1 - Error Rate
+
+COST:
+  Tokens per query — track for budget management
+  Cost per query — Target: < $0.01/query
+  GPU utilization — cost efficiency measure (low utilization = waste)
+
+IMPLEMENTATION:
+  Prometheus: Expose metrics via prometheus_client library
+    Counter: Monotonically increasing count (requests, errors)
+    Histogram: Distribution of values (latency buckets)
+    Gauge: Current value (active users, queue depth)
+  Grafana: Visualize Prometheus metrics in dashboards
+
+Key Prometheus queries:
+  Request rate: rate(agent_requests_total[5m])
+  P95 latency: histogram_quantile(0.95, agent_request_duration_seconds)
+  Error rate: rate(agent_errors_total[5m]) / rate(agent_requests_total[5m])
+
+EXAM TIP: Always use P95/P99 for latency SLAs, not mean. Mean hides tail latency.
+  P95 spike = 5% of users having bad experience = usually the SLA metric.
+
+
+================================================================================
+SECTION 2: LOGGING AND TRACING (Exam Obj 7.2)
+================================================================================
+
+---------------------------------------
+2.1 Structured Logging
+---------------------------------------
+Log every request as structured JSON, not plain text strings.
+
+Required fields per log entry:
+  timestamp: ISO format datetime
+  event: "request" | "response" | "error" | "tool_call"
+  query: User's input
+  user_id: Session/user identifier
+  response: Agent's output (for response events)
+  latency_ms: Execution time
+  error / stack_trace: For error events
+
+Why JSON: Logs can be parsed, filtered, aggregated by log management tools
+  (Elasticsearch, Splunk, CloudWatch Logs).
+
+Why NOT plain text: "Error occurred at 10:23" tells you nothing.
+  Structured: {"timestamp":"...","event":"error","query":"...","error":"..."} = searchable.
+
+---------------------------------------
+2.2 Distributed Tracing with LangSmith
+---------------------------------------
+LangSmith = LangChain's tracing and observability platform.
+Captures: Every LLM call, tool invocation, chain execution with timing.
+
+LangChainTracer callback: Add to AgentExecutor(callbacks=[tracer])
+Everything is automatically recorded and viewable in LangSmith UI.
+
+What LangSmith shows per trace:
+  - Full execution tree (which nodes ran, in what order)
+  - Timing breakdown per component
+  - Token counts per LLM call
+  - Tool inputs and outputs
+  - Errors with full context
+
+Alternative: Weights & Biases (W&B), MLflow for model/experiment tracking.
+
+EXAM: "Distributed tracing" + agent execution → LangSmith.
+  "Metrics dashboard" + Prometheus → Grafana.
+
+
+================================================================================
+SECTION 3: ANOMALY DETECTION (Exam Obj 7.2)
+================================================================================
+
+Statistical anomaly detection using Z-score:
+
+Algorithm:
+  Maintain sliding window of recent values (e.g., last 100 latency measurements)
+  Z-score = |( value - mean ) / std_dev|
+  If Z-score > threshold (typically 3.0) → anomaly → trigger alert
+
+Why Z-score = 3.0:
+  In normal distribution, 99.7% of values fall within 3 standard deviations.
+  A value beyond 3 std_devs is in the 0.3% tail — likely not normal variation.
+
+What to monitor with anomaly detection:
+  Latency spikes: Sudden 5x increase in response time
+  Error rate spikes: Error rate jumps from 1% to 15%
+  Accuracy degradation: Accuracy drops from 90% to 70% (concept drift)
+  Cost spikes: Average tokens/query suddenly doubles
+
+ALERT THRESHOLDS (typical):
+  P95 latency > 2x baseline → warning
+  Error rate > 5% → critical alert
+  Accuracy < 80% → quality alert (trigger retraining pipeline)
+
+WHAT TO DO ON ALERT:
+  Latency spike → check load, check model, check retrieval, check network
+  Error rate spike → check external APIs, check model endpoint, check tools
+  Accuracy drop → check data drift, check prompt quality, trigger re-evaluation
+
+
+================================================================================
+SECTION 4: CONTINUOUS EVALUATION (Exam Obj 7.3)
+================================================================================
+
+Never stop evaluating in production. Quality degrades over time due to:
+  DATA DRIFT: User queries change, domain shifts, new topics emerge
+  CONCEPT DRIFT: What's "correct" evolves (policy changes, new knowledge)
+  MODEL DRIFT: Base model updates can change behavior
+  DEPENDENCY DRIFT: Tool outputs change when upstream services update
+
+CONTINUOUS EVALUATION PIPELINE:
+  1. Maintain golden test set (representative queries + ground truth answers)
+  2. Schedule regular evaluation runs (daily or per N requests)
+  3. Compare accuracy to threshold (e.g., 80%)
+  4. If accuracy < threshold → trigger alert → initiate investigation
+  5. If persistent degradation → trigger retraining pipeline
+
+ALERT_THRESHOLD: 0.80 (80% accuracy) is typical.
+If accuracy drops below this: page on-call, inspect recent changes.
+
+RETRAINING TRIGGERS:
+  Accuracy below threshold for N consecutive evaluations
+  Distribution drift detected in input queries
+  New data available that would improve the model
+  Policy or domain changes require updated knowledge base
+
+
+================================================================================
+SECTION 5: TROUBLESHOOTING FLOWCHARTS (Exam Obj 7.2)
+================================================================================
+
+HIGH LATENCY DIAGNOSIS:
+  1. High request load? → Scale up (add more replicas/GPU capacity)
+  2. LLM inference slow? → Optimize with TensorRT-LLM INT8, use smaller model
+  3. Slow retrieval? → Optimize vector index (HNSW vs IVF), reduce K
+  4. External API slow? → Add caching, parallel calls, retry tuning
+  5. Network issue? → Check DNS, routing, firewall rules
+  6. Still slow? → Profile code (identify bottleneck in Python overhead)
+
+LOW ACCURACY DIAGNOSIS:
+  1. Poor data quality? → Improve ingestion, cleaning, chunking
+  2. Poor retrieval quality? → Tune K, chunk size, embedding model
+  3. Poor prompt quality? → Refine prompts, add examples, adjust CoT
+  4. Model too small? → Upgrade to larger model
+  5. Concept drift? → Update knowledge base, retrain
+
+FREQUENT ERRORS DIAGNOSIS:
+  1. API failures? → Check API health, add circuit breaker
+  2. Tool failures? → Check input validation, add retry logic
+  3. Context overflow? → Implement memory management
+  4. Timeout? → Adjust timeout values, optimize slow paths
+
+
+================================================================================
+SECTION 6: EXAM SCENARIOS
+================================================================================
+
+SCENARIO 1:
+Q: Agent's P95 latency jumped from 1s to 5s suddenly. What to check first?
+A: Request volume and load. Sudden latency spike usually = traffic spike.
+   Check: request rate graph, CPU/GPU utilization, queue depth.
+   If load is high → scale up. If load is normal → deeper investigation.
+
+SCENARIO 2:
+Q: How do you detect if agent quality is degrading in production over time?
+A: Continuous evaluation — run daily against golden test set, track accuracy
+   trend, alert if it drops below 80% threshold. Also track user satisfaction
+   (thumbs down rate trending up = quality signal).
+
+SCENARIO 3:
+Q: What logging fields are essential for debugging agent failures?
+A: timestamp, event type, user_id, query (sanitized), error message,
+   stack trace. Structured JSON format for machine parsing.
+
+
+================================================================================
+QUICK REVIEW CHECKLIST — MODULE 7
+================================================================================
+□ Can I name all 4 monitoring categories (Performance/Quality/Reliability/Cost)?
+□ Do I know what P95 latency means and why it's preferred over mean?
+□ Can I explain Counter vs Histogram vs Gauge in Prometheus?
+□ Do I know what LangSmith provides for distributed tracing?
+□ Can I explain Z-score anomaly detection and why threshold=3.0?
+□ Do I understand continuous evaluation and what triggers retraining?
+□ Can I walk through high latency diagnosis flowchart?
+□ Can I solve the 3 exam scenarios above without notes?
+
+EXAM WEIGHT: 7% | Focus: Metrics, structured logging, anomaly detection,
+  continuous evaluation, troubleshooting flowcharts.
+
+================================================================================
+================================================================================
+
+NCP-AAI EXAM — MODULE 8: DEPLOYMENT AND SCALING
+Deep Study Notes | Exam Weight: 5% | Study Time: 4-5 hrs
+
+================================================================================
+MENTAL MODEL BEFORE YOU START
+================================================================================
+
+Module 8 is DevOps/MLOps for AI agents. The exam weight is low (5%) so
+focus on understanding the concepts, not memorizing YAML line-by-line.
+
+Key areas: Container deployments, Kubernetes orchestration, CI/CD pipelines,
+  autoscaling, and cost optimization. This is familiar territory for an
+  infra engineer — just applied to the AI agent context.
+
+
+================================================================================
+SECTION 1: CONTAINERIZATION (Exam Obj 8.4)
+================================================================================
+
+BASE IMAGE: nvcr.io/nvidia/pytorch:24.01-py3
+  NVIDIA's official PyTorch container with GPU drivers pre-installed.
+  Use for GPU-enabled agent deployments.
+
+DOCKERFILE PATTERN:
+  FROM nvcr.io/nvidia/pytorch:24.01-py3
+  WORKDIR /app
+  COPY requirements.txt .
+  RUN pip install --no-cache-dir -r requirements.txt
+  COPY . .
+  EXPOSE 8000
+  CMD ["python", "agent_server.py"]
+
+DOCKER COMPOSE (multi-service agent stack):
+  Services: agent (GPU-enabled), vectordb (Milvus), redis (session cache)
+  GPU reservation: resources.reservations.devices with driver: nvidia
+  Environment: Pass NVIDIA_API_KEY via env variable (never hardcode)
+
+KEY PRINCIPLE: Containers ensure "works on my machine" = "works in production."
+  Eliminates environment inconsistency as a failure mode.
+
+
+================================================================================
+SECTION 2: KUBERNETES DEPLOYMENT (Exam Obj 8.1, 8.4)
+================================================================================
+
+---------------------------------------
+2.1 Core K8s Objects for Agents
+---------------------------------------
+
+DEPLOYMENT:
+  replicas: 3 (start with 3 for HA — one can fail and service continues)
+  resources.requests: Minimum guaranteed resources (GPU, memory, CPU)
+  resources.limits: Maximum resources allowed
+  GPU resource: nvidia.com/gpu: 1 (requires NVIDIA GPU Operator in cluster)
+  Secrets: NVIDIA_API_KEY via secretKeyRef (never plaintext in YAML)
+
+SERVICE:
+  Type: LoadBalancer for external traffic, ClusterIP for internal.
+  Routes external requests to pods matching selector label.
+  port: 80 (external), targetPort: 8000 (container port)
+
+INGRESS:
+  Route by hostname (agent.example.com) to backend service.
+  Enables HTTPS termination, path-based routing.
+
+---------------------------------------
+2.2 Horizontal Pod Autoscaler (HPA) — Critical Concept
+---------------------------------------
+HPA = automatic scaling based on metrics.
+
+Config:
+  scaleTargetRef: Which Deployment to scale
+  minReplicas: Never scale below this (e.g., 2 for HA)
+  maxReplicas: Never scale above this (cost guard)
+  metrics: CPU utilization target (70%) + memory utilization target (80%)
+
+HOW HPA WORKS:
+  Metrics server monitors CPU/memory of pods.
+  If average CPU > 70% → scale up (add replicas).
+  If average CPU < 35% (70% * 0.5) → scale down (remove replicas).
+  Scale up is fast (15-30s). Scale down is slow (5 minutes) to avoid flapping.
+
+WHY HPA FOR AGENTS:
+  Traffic is bursty — business hours vs. off-hours can be 10:1 ratio.
+  HPA min=2 ensures HA at all times.
+  HPA max=10 prevents runaway cost.
+  Saves ~60-80% cost vs. always-on at peak capacity.
+
+EXAM SCENARIO: "100 req/s peak, 10 req/s off-hours, optimize cost"
+  → HPA with min=2, max=10 (or appropriate replicas for load).
+
+
+================================================================================
+SECTION 3: CI/CD PIPELINE (Exam Obj 8.2)
+================================================================================
+
+Three-stage pipeline:
+  TEST: Run unit tests + integration tests. Block deployment if tests fail.
+  BUILD: Build Docker image tagged with commit SHA. Push to registry.
+  DEPLOY: Rolling update of Kubernetes deployment. Verify rollout.
+
+GitHub Actions pattern:
+  on: push to main branch (triggers pipeline)
+  jobs: test → build → deploy (sequential with "needs" dependency)
+  
+ROLLING DEPLOYMENT:
+  kubectl set image deployment/[name] agent=[image]:[sha]
+  kubectl rollout status deployment/[name]  ← waits until stable
+  
+ROLLBACK:
+  kubectl rollout undo deployment/[name]
+  Returns to previous version instantly.
+
+MLOps additions specific to agents:
+  Model versioning: Tag models with semantic versions (v1.0.0)
+  Prompt versioning: Track prompt templates in version control
+  A/B deployment: Canary deployments to test new prompts/models on subset of traffic
+  Automated evaluation gate: Run eval pipeline before promoting to production
+
+
+================================================================================
+SECTION 4: LOAD BALANCING STRATEGIES (Exam Obj 8.1)
+================================================================================
+
+ROUND ROBIN: Distribute requests evenly across replicas.
+  Default for most load balancers. Good for uniform workloads.
+
+LEAST CONNECTIONS: Route to replica with fewest active connections.
+  Better for variable-length requests (some queries take 5s, some take 1s).
+  Agent requests can vary hugely in duration — least connections is better.
+
+IP HASH: Same client IP always goes to same replica (sticky sessions).
+  Use when: Stateful agents where session state is stored in-memory (not ideal).
+  Better approach: Move state to external store (Redis) and use stateless agents.
+
+WEIGHTED: Different replicas get different traffic fractions.
+  Use for: Canary deployments (90% to stable, 10% to new version).
+  Also for: Heterogeneous capacity (some nodes have more GPU memory).
+
+
+================================================================================
+SECTION 5: COST OPTIMIZATION (Exam Obj 8.5)
+================================================================================
+
+LEVERS FOR COST REDUCTION:
+  1. Model size: 8B model costs ~12x less than 70B per token.
+     Route simple queries to small model.
+  2. Quantization: INT8 halves compute cost + memory = 2x batch size = 2x throughput.
+  3. Batch size: Larger batches = better GPU utilization = lower cost per request.
+  4. HPA: Scale down during off-hours instead of running peak capacity 24/7.
+  5. Spot/preemptible instances: 60-80% cheaper than on-demand (but can be interrupted).
+  6. Response caching: Cache responses for common queries = zero inference cost.
+
+COST ANALYSIS FORMULA:
+  Cost per request = (num_gpus × gpu_cost_per_hour × hours) / total_requests
+  Cost per 1K tokens = total_cost / (total_tokens / 1000)
+
+OPTIMIZATION PRIORITY ORDER:
+  1. Cache common queries (near-zero cost)
+  2. Route to smaller model where possible
+  3. Apply INT8 quantization to model
+  4. Increase batch size
+  5. Use HPA to right-size infrastructure
+  6. Consider spot instances for non-latency-critical batch processing
+
+
+================================================================================
+SECTION 6: EXAM SCENARIOS
+================================================================================
+
+SCENARIO 1:
+Q: Agent handles 100 req/s peak, 10 req/s nights. How to optimize costs while
+   maintaining availability?
+A: HPA with minReplicas=2 (HA guaranteed), maxReplicas=10 (peak capacity),
+   target CPU utilization=70%. Auto-scales up during business hours,
+   scales down at night. Saves vs. always-on at 10 replicas.
+
+SCENARIO 2:
+Q: You want to test a new prompt template with 10% of traffic before full rollout.
+   What deployment strategy?
+A: Canary deployment with weighted load balancing. 90% traffic to stable (v1),
+   10% to canary (v2). Monitor metrics. If stable, gradually increase to 100%.
+
+SCENARIO 3:
+Q: Agent deployment fails and users are affected. How to restore service quickly?
+A: kubectl rollout undo deployment/agent-deployment
+   Immediately reverts to previous stable version. Then investigate root cause.
+
+
+================================================================================
+QUICK REVIEW CHECKLIST — MODULE 8
+================================================================================
+□ Can I explain HPA min/max replicas and when to use each?
+□ Do I know the 3-stage CI/CD pipeline (test → build → deploy)?
+□ Can I explain 4 load balancing strategies and when to use each?
+□ Do I know kubectl rollout undo for emergency rollback?
+□ Can I name 5 cost optimization levers in priority order?
+□ Do I understand canary deployment for safe rollouts?
+□ Can I solve the 3 exam scenarios above without notes?
+
+EXAM WEIGHT: 5% (lowest weight module)
+Focus: HPA for autoscaling, canary deployments, cost optimization levers,
+  rollback strategy. The HPA scenario question is very likely.
